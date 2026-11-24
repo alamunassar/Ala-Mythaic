@@ -1,0 +1,8 @@
+{
+  "name": "MITHAQ-Lab",
+  "description": "Solar Installation Verification & Engineering Audit Platform — What Was Promised vs. What Was Installed vs. What Was Verified.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
