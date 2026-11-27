@@ -11,7 +11,12 @@ import {
   resolveEquipmentProvenance,
   runEngineeringValidation,
 } from '../engineeringEngine.ts';
-import { createDemoProject } from '../../data/demoProject.ts';
+import {
+  createDemoProject,
+  createScenarioProject,
+  DEMO_SCENARIOS,
+  loadScenarioIntoProjects,
+} from '../../data/demoProject.ts';
 import { buildProjectPdfDocument, toPdfSafeText } from '../../utils/pdfReport.ts';
 import {
   createOriginalAiSnapshot,
@@ -19,6 +24,28 @@ import {
   sanitizeSpecFieldsByCategory,
 } from '../../utils/categorySpecs.ts';
 import { normalizeLoadedProject } from '../../utils/storage.ts';
+import { safeFetchJson } from '../../utils/api.ts';
+import {
+  AiTimeoutError,
+  extractReadableError,
+  generateContentWithFallback,
+  getApiErrorCode,
+  getApiErrorStatus,
+} from '../../utils/aiReliability.ts';
+import {
+  extractTrackedFieldValues,
+  isProtectedVerifiedRecord,
+  planEquipmentExtractionMerge,
+  resolveConflictFillMissingOnly,
+  resolveConflictKeepExisting,
+  resolveConflictReplaceWithProposed,
+  resolveManualEditProvenance,
+} from '../../utils/equipmentProtection.ts';
+import {
+  getDirection,
+  loadLanguage,
+  normalizeLanguage,
+} from '../../i18n/translations.ts';
 import type { EquipmentSpec, SolarProject } from '../../types/mithaq.ts';
 
 function makePv(overrides: Partial<EquipmentSpec> = {}): EquipmentSpec {
@@ -767,4 +794,573 @@ describe('MITHAQ-Lab Deterministic Engineering Engine', () => {
     assert.ok(allPdfText.includes('Calculation Outcome'));
     assert.ok(allPdfText.includes('Input Confidence'));
   });
+
+  it('protects USER_VERIFIED and DATASHEET_VERIFIED records during AI extraction without duplicates', () => {
+    const userVerifiedPv = makePv({
+      id: 'pv-verified',
+      manufacturer: 'Jinko Solar',
+      model: 'JKM580N-72HL4-V',
+      ratedPowerW: 580,
+      vocV: 51.4,
+      tempCoeffVocPctPerC: null,
+      provenance: 'USER_VERIFIED',
+      verifiedByUser: true,
+    });
+    const datasheetVerifiedInv = makeInverter({
+      id: 'inv-ds',
+      manufacturer: 'Deye',
+      model: 'SUN-10K-SG04LP3',
+      provenance: 'DATASHEET_VERIFIED',
+      datasheetFileName: 'deye_10k.pdf',
+      verifiedByUser: false,
+    });
+    const aiPlusDatasheetBatt = makeBattery({
+      id: 'bat-mixed',
+      provenance: 'AI_EXTRACTED',
+      verifiedByUser: false,
+      datasheetFileName: 'pylontech.pdf',
+      fieldProvenance: { capacityKwh: 'DATASHEET_VERIFIED' },
+    });
+    const unverifiedSimulatedPv = makePv({
+      id: 'pv-sim',
+      model: 'MD-500-SIM',
+      provenance: 'SIMULATED',
+      verifiedByUser: false,
+    });
+
+    assert.equal(isProtectedVerifiedRecord(userVerifiedPv, false), true);
+    assert.equal(isProtectedVerifiedRecord(datasheetVerifiedInv, false), true);
+    assert.equal(isProtectedVerifiedRecord(aiPlusDatasheetBatt, false), true);
+    assert.equal(isProtectedVerifiedRecord(unverifiedSimulatedPv, false), false);
+
+    // 1. Existing USER_VERIFIED PV + DATASHEET_VERIFIED Inverter + unmentioned Battery
+    const incomingQuote: EquipmentSpec[] = [
+      makePv({
+        id: 'ai-pv-1',
+        manufacturer: 'Other Solar',
+        model: 'OS-450',
+        ratedPowerW: 450,
+        tempCoeffVocPctPerC: -0.27,
+        provenance: 'AI_EXTRACTED',
+        verifiedByUser: false,
+      }),
+      makeInverter({
+        id: 'ai-inv-1',
+        manufacturer: 'Generic',
+        model: 'GEN-8K',
+        ratedPowerW: 8000,
+        provenance: 'AI_EXTRACTED',
+        verifiedByUser: false,
+      }),
+    ];
+
+    const plan = planEquipmentExtractionMerge(
+      [userVerifiedPv, datasheetVerifiedInv, aiPlusDatasheetBatt],
+      incomingQuote,
+      false,
+    );
+
+    // Protected records preserved intact, unmentioned category preserved, zero duplicates
+    assert.equal(plan.conflicts.length, 2);
+    assert.equal(plan.nextEquipment.length, 3);
+    assert.equal(plan.nextEquipment.find((e) => e.category === 'PV_MODULE')?.id, 'pv-verified');
+    assert.equal(plan.nextEquipment.find((e) => e.category === 'INVERTER')?.id, 'inv-ds');
+    assert.equal(plan.nextEquipment.find((e) => e.category === 'BATTERY')?.id, 'bat-mixed');
+    assert.deepEqual(plan.preservedUnchangedCategories, ['BATTERY']);
+
+    // Conflict actions: KEEP leaves verified untouched; FILL_MISSING only fills null fields
+    const afterKeep = resolveConflictKeepExisting(plan.nextEquipment, plan.conflicts[0]);
+    assert.equal(afterKeep.find((e) => e.category === 'PV_MODULE')?.model, 'JKM580N-72HL4-V');
+
+    const pvConflict = plan.conflicts.find((c) => c.category === 'PV_MODULE')!;
+    const afterFill = resolveConflictFillMissingOnly(plan.nextEquipment, pvConflict, false);
+    const filledPv = afterFill.find((e) => e.category === 'PV_MODULE')!;
+    assert.equal(filledPv.model, 'JKM580N-72HL4-V'); // kept verified value
+    assert.equal(filledPv.tempCoeffVocPctPerC, -0.27); // filled previously missing field
+    assert.equal(getFieldProvenance(filledPv, 'tempCoeffVocPctPerC', false), 'AI_EXTRACTED');
+    assert.equal(getFieldProvenance(filledPv, 'vocV', false), 'USER_VERIFIED');
+    assert.equal(afterFill.filter((e) => e.category === 'PV_MODULE').length, 1);
+
+    // Explicit replace updates in-place with zero duplicates
+    const afterReplace = resolveConflictReplaceWithProposed(afterFill, pvConflict);
+    assert.equal(afterReplace.filter((e) => e.category === 'PV_MODULE').length, 1);
+    assert.equal(afterReplace.find((e) => e.category === 'PV_MODULE')?.id, 'ai-pv-1');
+
+    // Unverified existing records are replaced cleanly without creating duplicates
+    const unverifiedPlan = planEquipmentExtractionMerge(
+      [unverifiedSimulatedPv],
+      [makePv({ id: 'ai-pv-2', provenance: 'AI_EXTRACTED', verifiedByUser: false })],
+      false,
+    );
+    assert.equal(unverifiedPlan.conflicts.length, 0);
+    assert.equal(unverifiedPlan.nextEquipment.length, 1);
+    assert.equal(unverifiedPlan.nextEquipment[0].id, 'ai-pv-2');
+  });
+
+  it('tracks manual field edit provenance without altering unedited fields or marking partial edits USER_VERIFIED', () => {
+    // Case A: AI_EXTRACTED record with one DATASHEET_VERIFIED field; user manually edits vocV & datasheet tempCoeff
+    const aiPv = makePv({
+      vocV: 49.42,
+      vmpV: 40.9,
+      tempCoeffVocPctPerC: -0.28,
+      provenance: 'AI_EXTRACTED',
+      verifiedByUser: false,
+      datasheetFileName: 'jinko.pdf',
+      fieldProvenance: { tempCoeffVocPctPerC: 'DATASHEET_VERIFIED' },
+    });
+
+    const baselineA = extractTrackedFieldValues(aiPv);
+    const editedValuesA = {
+      ...baselineA,
+      vocV: 49.85, // manually edited AI field
+      tempCoeffVocPctPerC: -0.31, // manually edited datasheet field
+    };
+    const resA = resolveManualEditProvenance({
+      initialSpec: aiPv,
+      baselineValues: baselineA,
+      nextValues: editedValuesA,
+      nextQuantity: aiPv.quantity,
+      workingFieldProvenance: aiPv.fieldProvenance ?? {},
+      datasheetFileName: aiPv.datasheetFileName,
+      verifiedByUser: false,
+      isSimulatedRecord: false,
+      projectIsDemo: false,
+    });
+
+    assert.equal(resA.provenance, 'AI_EXTRACTED');
+    assert.equal(resA.verifiedByUser, false);
+    assert.deepEqual(resA.manuallyEditedFields.sort(), ['tempCoeffVocPctPerC', 'vocV']);
+    assert.equal(resA.fieldProvenance.vocV, 'MANUAL_ENTRY');
+    assert.equal(resA.fieldProvenance.tempCoeffVocPctPerC, 'MANUAL_ENTRY');
+    const savedA: EquipmentSpec = {
+      ...aiPv,
+      vocV: 49.85,
+      tempCoeffVocPctPerC: -0.31,
+      provenance: resA.provenance,
+      fieldProvenance: resA.fieldProvenance,
+      verifiedByUser: resA.verifiedByUser,
+    };
+    assert.equal(getFieldProvenance(savedA, 'vocV', false), 'MANUAL_ENTRY');
+    assert.equal(getFieldProvenance(savedA, 'tempCoeffVocPctPerC', false), 'MANUAL_ENTRY');
+    assert.equal(getFieldProvenance(savedA, 'vmpV', false), 'AI_EXTRACTED');
+
+    // Case B: DATASHEET_VERIFIED record where user manually edits 1 field without verifying
+    const dsInv = makeInverter({
+      provenance: 'DATASHEET_VERIFIED',
+      verifiedByUser: false,
+      datasheetFileName: 'deye.pdf',
+      fieldProvenance: {},
+    });
+    const baselineB = extractTrackedFieldValues(dsInv);
+    const resB = resolveManualEditProvenance({
+      initialSpec: dsInv,
+      baselineValues: baselineB,
+      nextValues: { ...baselineB, maxPvInputVoltageV: 820 },
+      nextQuantity: dsInv.quantity,
+      workingFieldProvenance: {},
+      datasheetFileName: dsInv.datasheetFileName,
+      verifiedByUser: false,
+      isSimulatedRecord: false,
+      projectIsDemo: false,
+    });
+    assert.equal(resB.provenance, 'MANUAL_ENTRY');
+    assert.equal(resB.verifiedByUser, false);
+    const savedB: EquipmentSpec = {
+      ...dsInv,
+      maxPvInputVoltageV: 820,
+      provenance: resB.provenance,
+      fieldProvenance: resB.fieldProvenance,
+      verifiedByUser: resB.verifiedByUser,
+    };
+    assert.equal(getFieldProvenance(savedB, 'maxPvInputVoltageV', false), 'MANUAL_ENTRY');
+    assert.equal(getFieldProvenance(savedB, 'mpptMaxV', false), 'DATASHEET_VERIFIED');
+  });
+
+  it('never treats missing, whitespace, or punctuation-only manufacturer/model strings as a MATCH', () => {
+    for (const badValue of ['', '   ', '-', '---', '...', '—', null]) {
+      const project = makeBaseProject({
+        promisedEquipment: [makePv({ manufacturer: 'Jinko Solar', model: 'JKM550M-72HL4-V' })],
+        installedEquipment: [
+          makePv({
+            manufacturer: badValue,
+            model: badValue,
+          }),
+        ],
+      });
+
+      const comps = comparePromisedVsInstalled(project);
+      const pvComp = comps.find((c) => c.category === 'PV_MODULE')!;
+      const mfgDiff = pvComp.differences.find((d) => d.field === 'Manufacturer');
+      const modelDiff = pvComp.differences.find((d) => d.field === 'Model Number');
+      assert.equal(mfgDiff?.status, 'NOT VERIFIED', `Expected NOT VERIFIED for manufacturer="${badValue}"`);
+      assert.equal(modelDiff?.status, 'NOT VERIFIED', `Expected NOT VERIFIED for model="${badValue}"`);
+      assert.ok(pvComp.missingFields.includes('Manufacturer'));
+      assert.ok(pvComp.missingFields.includes('Model Number'));
+    }
+
+    // Legitimate partial/full manufacturer matches & mismatches are preserved
+    const legitProject = makeBaseProject({
+      promisedEquipment: [makePv({ manufacturer: 'Jinko Solar Co., Ltd.' })],
+      installedEquipment: [makePv({ manufacturer: 'Jinko Solar' })],
+    });
+    const legitMfgDiff = comparePromisedVsInstalled(legitProject)
+      .find((c) => c.category === 'PV_MODULE')
+      ?.differences.find((d) => d.field === 'Manufacturer');
+    assert.equal(legitMfgDiff?.status, 'MATCH');
+
+    const mismatchProject = makeBaseProject({
+      promisedEquipment: [makePv({ manufacturer: 'Jinko Solar' })],
+      installedEquipment: [makePv({ manufacturer: 'LONGi Solar' })],
+    });
+    const mismatchMfgDiff = comparePromisedVsInstalled(mismatchProject)
+      .find((c) => c.category === 'PV_MODULE')
+      ?.differences.find((d) => d.field === 'Manufacturer');
+    assert.equal(mismatchMfgDiff?.status, 'MISMATCH');
+  });
+
+  it('handles Gemini timeouts, bounded retries, and safeFetchJson timeouts cleanly', async () => {
+    // 1. Hanging Gemini request triggers AiTimeoutError (408 / AI_TIMEOUT) without retrying
+    let hangCalls = 0;
+    const hangingAi = {
+      models: {
+        generateContent: ({ config }: { config?: { abortSignal?: AbortSignal } }) =>
+          new Promise<{ text?: string }>((_resolve, reject) => {
+            hangCalls += 1;
+            config?.abortSignal?.addEventListener(
+              'abort',
+              () => reject(new DOMException('Aborted', 'AbortError')),
+              { once: true },
+            );
+          }),
+      },
+    };
+
+    await assert.rejects(
+      () =>
+        generateContentWithFallback(
+          hangingAi,
+          { contents: 'test' },
+          { attemptTimeoutMs: 30, overallTimeoutMs: 200, maxTransientRetries: 1, retryDelayMs: 5 },
+        ),
+      (err: unknown) => {
+        assert.ok(err instanceof AiTimeoutError);
+        assert.equal(getApiErrorStatus(err), 408);
+        assert.equal(getApiErrorCode(err), 'AI_TIMEOUT');
+        assert.ok(extractReadableError(err).toLowerCase().includes('timed out'));
+        return true;
+      },
+    );
+    assert.equal(hangCalls, 1);
+
+    // 2. Non-transient 400 error fails immediately without retries
+    let nonTransientCalls = 0;
+    const badRequestAi = {
+      models: {
+        generateContent: async () => {
+          nonTransientCalls += 1;
+          throw new Error('400 INVALID_ARGUMENT: bad schema');
+        },
+      },
+    };
+    await assert.rejects(
+      () =>
+        generateContentWithFallback(
+          badRequestAi,
+          { contents: 'test' },
+          { attemptTimeoutMs: 500, overallTimeoutMs: 1000, maxTransientRetries: 2, retryDelayMs: 5 },
+        ),
+      /INVALID_ARGUMENT/,
+    );
+    assert.equal(nonTransientCalls, 1);
+
+    // 3. Daily quota error switches straight to fallback model without retrying primary
+    const calledModels: string[] = [];
+    const quotaFallbackAi = {
+      models: {
+        generateContent: async ({ model }: { model: string }) => {
+          calledModels.push(model);
+          if (model === 'gemini-4-hydrogen') {
+            throw new Error('429 Quota exceeded for free_tier_requests PerDay');
+          }
+          return { text: '{"ok":true}' };
+        },
+      },
+    };
+    const fallbackRes = await generateContentWithFallback(
+      quotaFallbackAi,
+      { contents: 'test' },
+      { attemptTimeoutMs: 500, overallTimeoutMs: 1000, maxTransientRetries: 1, retryDelayMs: 5 },
+    );
+    assert.equal(fallbackRes.text, '{"ok":true}');
+    assert.deepEqual(calledModels, ['gemini-4-hydrogen', 'gemini-3.1-flash-lite']);
+
+    // 4. safeFetchJson aborts hung requests cleanly with 408 and timedOut=true
+    const origFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = ((_url: unknown, init?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            'abort',
+            () => reject(new DOMException('The operation was aborted', 'AbortError')),
+            { once: true },
+          );
+        })) as typeof fetch;
+
+      const timedOutRes = await safeFetchJson('/api/ai/extract-quotation', {
+        method: 'POST',
+        timeoutMs: 25,
+      });
+      assert.equal(timedOutRes.ok, false);
+      assert.equal(timedOutRes.status, 408);
+      assert.equal(timedOutRes.timedOut, true);
+      assert.ok(timedOutRes.error?.toLowerCase().includes('timed out'));
+
+      // HTML fallback page returns clear error rather than JSON parse crash
+      globalThis.fetch = (async () =>
+        new Response('<!doctype html><html><body>Bad Gateway</body></html>', {
+          status: 502,
+          headers: { 'Content-Type': 'text/html' },
+        })) as typeof fetch;
+
+      const htmlRes = await safeFetchJson('/api/ai/extract-quotation');
+      assert.equal(htmlRes.ok, false);
+      assert.equal(htmlRes.status, 502);
+      assert.ok(htmlRes.error?.includes('HTML page instead of JSON'));
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it('provides three clearly labeled SIMULATED demonstration scenarios with deterministic engine outputs', () => {
+    assert.equal(DEMO_SCENARIOS.length, 3);
+
+    for (const def of DEMO_SCENARIOS) {
+      const proj = createScenarioProject(def.id);
+      assert.equal(proj.id, def.projectId);
+      assert.equal(proj.isDemo, true);
+      assert.equal(projectContainsSimulatedData(proj), true);
+      assert.equal(proj.arrayConfig.provenance, 'SIMULATED');
+      for (const eq of [...proj.promisedEquipment, ...proj.installedEquipment]) {
+        assert.equal(eq.provenance, 'SIMULATED');
+        assert.equal(eq.verifiedByUser, false);
+        assert.equal(resolveEquipmentProvenance(eq, proj.isDemo), 'SIMULATED');
+      }
+      for (const meas of proj.fieldMeasurements) {
+        assert.equal(meas.isSimulated, true);
+      }
+    }
+
+    // Scenario 1: Compliant Synthetic Installation -> 100% MATCH, 7/7 PASS — SIMULATED INPUTS
+    const s1 = createScenarioProject('compliant');
+    const s1Comps = comparePromisedVsInstalled(s1);
+    const s1Checks = runEngineeringValidation(s1);
+    const s1Summary = computeAuditSummary(s1Comps, s1Checks);
+    assert.equal(s1Comps.length, 3);
+    for (const comp of s1Comps) {
+      assert.equal(comp.status, 'MATCH');
+    }
+    assert.equal(s1Summary.equipmentMatchPct, 100);
+    assert.equal(s1Summary.discrepancies, 0);
+    assert.equal(s1Summary.overallStatus, 'VERIFIED MATCH');
+    assert.equal(s1Checks.length, 7);
+    for (const ck of s1Checks) {
+      assert.equal(ck.status, 'PASS', `Scenario 1 check ${ck.id} failed: ${ck.explanation}`);
+      assert.equal(ck.inputConfidence, 'SIMULATED_INPUTS');
+      assert.equal(ck.qualifiedResult, 'PASS — SIMULATED INPUTS');
+    }
+    assert.equal(s1Checks.find((c) => c.id === 'check-pv-voc-stc')?.calculatedValue, 396);
+    assert.equal(s1Checks.find((c) => c.id === 'check-thermal-voc')?.calculatedValue, 421.74);
+    assert.equal(s1Checks.find((c) => c.id === 'check-mppt-window')?.calculatedValue, 332);
+    assert.equal(
+      s1Checks.find((c) => c.id === 'check-pv-operating-current')?.calculatedValue,
+      26.5,
+    );
+    assert.equal(
+      s1Checks.find((c) => c.id === 'check-pv-shortcircuit-current')?.calculatedValue,
+      27.6,
+    );
+    assert.equal(s1Checks.find((c) => c.id === 'check-dc-ac-ratio')?.calculatedValue, 0.88);
+    assert.equal(s1Checks.find((c) => c.id === 'check-battery-voltage')?.calculatedValue, 48);
+
+    // Scenario 2: Equipment Mismatch & Engineering Failure -> 3 MISMATCH, Isc FAIL, ACTION REQUIRED
+    const s2 = createScenarioProject('mismatch');
+    const s2Comps = comparePromisedVsInstalled(s2);
+    const s2Checks = runEngineeringValidation(s2);
+    const s2Summary = computeAuditSummary(s2Comps, s2Checks);
+    assert.equal(s2Comps.find((c) => c.category === 'PV_MODULE')?.status, 'MISMATCH');
+    assert.equal(s2Comps.find((c) => c.category === 'INVERTER')?.status, 'MISMATCH');
+    assert.equal(s2Comps.find((c) => c.category === 'BATTERY')?.status, 'MISMATCH');
+    assert.equal(
+      s2Checks.find((c) => c.id === 'check-pv-shortcircuit-current')?.status,
+      'FAIL',
+    );
+    assert.equal(
+      s2Checks.find((c) => c.id === 'check-thermal-voc')?.status,
+      'INSUFFICIENT DATA',
+    );
+    assert.equal(
+      s2Checks.find((c) => c.id === 'check-pv-operating-current')?.status,
+      'INSUFFICIENT DATA',
+    );
+    assert.equal(s2Summary.overallStatus, 'ACTION REQUIRED');
+
+    // Scenario 3: Incomplete Data -> 5 INSUFFICIENT DATA, 2 PASS, missing params reported & resolvable
+    const s3 = createScenarioProject('incomplete');
+    const s3Comps = comparePromisedVsInstalled(s3);
+    const s3Checks = runEngineeringValidation(s3);
+    const s3Summary = computeAuditSummary(s3Comps, s3Checks);
+    const s3MissingReport = buildMissingDataReport(s3, s3Comps, s3Checks);
+
+    assert.equal(s3Summary.discrepancies, 0);
+    assert.equal(s3Summary.insufficientDataChecks, 5);
+    assert.equal(s3Summary.passedChecks, 2);
+    assert.equal(s3Summary.overallStatus, 'INCOMPLETE DATA');
+    assert.equal(s3MissingReport.blockedChecks.length, 5);
+    assert.ok(s3MissingReport.missingParameters.some((m) => m.key === 'pv.tempCoeffVocPctPerC'));
+    assert.ok(s3MissingReport.missingParameters.some((m) => m.key === 'inv.maxPvInputVoltageV'));
+    assert.ok(s3MissingReport.missingParameters.some((m) => m.key === 'inv.mpptMinV'));
+    assert.ok(s3MissingReport.missingParameters.some((m) => m.key === 'inv.maxPvOperatingCurrentA'));
+    assert.ok(s3MissingReport.missingParameters.some((m) => m.key === 'batt.nominalVoltageV'));
+    assert.ok(s3MissingReport.missingParameters.some((m) => m.key === 'array.minAmbientTempC'));
+
+    // Filling missing inputs manually resolves all 5 blocked checks cleanly
+    const resolvedS3: SolarProject = {
+      ...s3,
+      installedEquipment: s3.installedEquipment.map((eq) => {
+        if (eq.category === 'PV_MODULE') return { ...eq, tempCoeffVocPctPerC: -0.26 };
+        if (eq.category === 'INVERTER') {
+          return { ...eq, maxPvInputVoltageV: 750, mpptMinV: 180, maxPvOperatingCurrentA: 22 };
+        }
+        return { ...eq, nominalVoltageV: 48 };
+      }),
+      arrayConfig: { ...s3.arrayConfig, minAmbientTempC: 2 },
+    };
+    const resolvedChecks = runEngineeringValidation(resolvedS3);
+    for (const ck of resolvedChecks) {
+      assert.equal(ck.status, 'PASS', `Resolved Scenario 3 check ${ck.id}: ${ck.explanation}`);
+    }
+  });
+
+  it('loads and resets scenarios cleanly without modifying real projects or merging stale state', () => {
+    const realProject = makeBaseProject({
+      id: 'MTH-REAL-2026-999',
+      customerName: 'Real Clinic Audit',
+      isDemo: false,
+    });
+
+    // Load Scenario 1 alongside existing real project
+    const step1 = loadScenarioIntoProjects([realProject], 'compliant');
+    assert.equal(step1.loadedProject.id, 'MTH-DEMO-2026-S1');
+    assert.equal(step1.projects.length, 2);
+    assert.equal(step1.projects.find((p) => p.id === 'MTH-REAL-2026-999')?.customerName, 'Real Clinic Audit');
+
+    // Mutate Scenario 1 in memory (simulate user edits), then load Scenario 3 and reset Scenario 1
+    const mutatedList = step1.projects.map((p) =>
+      p.id === 'MTH-DEMO-2026-S1'
+        ? {
+            ...p,
+            customerName: 'Edited Temporary Title',
+            arrayConfig: { ...p.arrayConfig, modulesPerString: 99 },
+          }
+        : p,
+    );
+
+    const step2 = loadScenarioIntoProjects(mutatedList, 'incomplete');
+    assert.equal(step2.loadedProject.id, 'MTH-DEMO-2026-S3');
+    assert.equal(step2.loadedProject.arrayConfig.modulesPerString, 12);
+    assert.equal(step2.projects.length, 3);
+
+    // Reloading Scenario 1 resets it back to pristine state with zero duplicates and real project preserved
+    const step3 = loadScenarioIntoProjects(step2.projects, 'compliant');
+    const s1Occurrences = step3.projects.filter((p) => p.id === 'MTH-DEMO-2026-S1');
+    assert.equal(s1Occurrences.length, 1);
+    assert.equal(
+      s1Occurrences[0].customerName,
+      'Al-Waha Logistics Warehouse (Simulated Scenario 1)',
+    );
+    assert.equal(s1Occurrences[0].arrayConfig.modulesPerString, 8);
+    assert.equal(
+      step3.projects.find((p) => p.id === 'MTH-REAL-2026-999')?.customerName,
+      'Real Clinic Audit',
+    );
+    assert.equal(
+      step3.projects.find((p) => p.id === 'MTH-DEMO-2026-S3')?.arrayConfig.minAmbientTempC,
+      null,
+    );
+  });
 });
+
+describe('Arabic-First Defaults, RTL Direction & Arabic PDF Verification', () => {
+  it('defaults to Arabic (ar) with RTL direction when storage is unavailable or invalid', () => {
+    assert.equal(normalizeLanguage(undefined), 'ar');
+    assert.equal(normalizeLanguage(null), 'ar');
+    assert.equal(normalizeLanguage('fr'), 'ar');
+    assert.equal(normalizeLanguage('ar'), 'ar');
+    assert.equal(normalizeLanguage('en'), 'en');
+    assert.equal(loadLanguage(), 'ar');
+    assert.equal(getDirection('ar'), 'rtl');
+    assert.equal(getDirection('en'), 'ltr');
+  });
+
+  it('produces localized Arabic engineering labels and explanations with identical deterministic numbers', () => {
+    const s1 = createScenarioProject('compliant');
+    const enChecks = runEngineeringValidation(s1, 'en');
+    const arChecks = runEngineeringValidation(s1, 'ar');
+
+    assert.equal(arChecks.length, enChecks.length);
+    for (let i = 0; i < enChecks.length; i++) {
+      assert.equal(arChecks[i].id, enChecks[i].id);
+      assert.equal(arChecks[i].status, enChecks[i].status);
+      assert.equal(arChecks[i].calculatedValue, enChecks[i].calculatedValue);
+      assert.equal(arChecks[i].formula, enChecks[i].formula);
+      assert.match(arChecks[i].title, /[\u0600-\u06FF]/, `Expected Arabic title for ${arChecks[i].id}`);
+      assert.match(
+        arChecks[i].explanation,
+        /[\u0600-\u06FF]/,
+        `Expected Arabic explanation for ${arChecks[i].id}`,
+      );
+    }
+
+    // Verify critical deterministic numeric values match Scenario 1 expectations
+    const arMap = new Map(arChecks.map((c) => [c.id, c]));
+    assert.equal(arMap.get('check-pv-voc-stc')?.calculatedValue, 396);
+    assert.equal(arMap.get('check-thermal-voc')?.calculatedValue, 421.74);
+    assert.equal(arMap.get('check-mppt-window')?.calculatedValue, 332);
+    assert.equal(arMap.get('check-pv-operating-current')?.calculatedValue, 26.5);
+    assert.equal(arMap.get('check-pv-shortcircuit-current')?.calculatedValue, 27.6);
+    assert.equal(arMap.get('check-dc-ac-ratio')?.calculatedValue, 0.88);
+    assert.equal(arMap.get('check-battery-voltage')?.calculatedValue, 48);
+
+    // Ensure technical symbols remain preserved in Arabic comparison and validation
+    assert.ok(arChecks.some((c) => c.title.includes('Voc') || c.formula.includes('Voc')));
+    assert.ok(arChecks.some((c) => c.title.includes('MPPT') || c.formula.includes('MPPT')));
+
+    const s3 = createScenarioProject('incomplete');
+    const s3CompsAr = comparePromisedVsInstalled(s3, 'ar');
+    const s3ChecksAr = runEngineeringValidation(s3, 'ar');
+    const s3MissingAr = buildMissingDataReport(s3, s3CompsAr, s3ChecksAr, 'ar');
+    assert.equal(s3MissingAr.blockedChecks.length, 5);
+    assert.ok(s3MissingAr.missingParameters.every((m) => /[\u0600-\u06FF]/.test(m.parameter)));
+  });
+
+  it('builds Arabic RTL PDF reports with DejaVuSans font and zero ??? placeholders across all scenarios', () => {
+    for (const key of ['compliant', 'mismatch', 'incomplete'] as const) {
+      const scenario = createScenarioProject(key);
+      const { doc } = buildProjectPdfDocument(scenario, 'ar');
+      const fonts = doc.getFontList();
+      assert.ok(
+        Object.keys(fonts).some((name) => name.toLowerCase() === 'dejavusans'),
+        `Expected DejaVuSans font registered for scenario ${key}`,
+      );
+      assert.ok(doc.getNumberOfPages() >= 3, `Expected >= 3 pages for scenario ${key}`);
+
+      const buf = doc.output('arraybuffer');
+      assert.ok(buf.byteLength > 100_000, `Expected non-empty PDF payload for ${key}`);
+
+      const rawText = new TextDecoder('latin1').decode(new Uint8Array(buf));
+      assert.ok(rawText.includes('DejaVuSans'), `Expected DejaVuSans embedded in PDF for ${key}`);
+      assert.ok(!rawText.includes('???'), `Unexpected ??? placeholder in Arabic PDF for ${key}`);
+    }
+  });
+});
+

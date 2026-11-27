@@ -1,16 +1,50 @@
+export const DEFAULT_FETCH_TIMEOUT_MS = 45_000;
+
 export interface SafeFetchResult<T> {
   ok: boolean;
   status: number;
   data: T | null;
   error: string | null;
+  timedOut?: boolean;
+}
+
+export interface SafeFetchInit extends RequestInit {
+  timeoutMs?: number;
 }
 
 export async function safeFetchJson<T>(
   url: string,
-  init?: RequestInit,
+  init?: SafeFetchInit,
 ): Promise<SafeFetchResult<T>> {
+  const { timeoutMs = DEFAULT_FETCH_TIMEOUT_MS, signal: externalSignal, ...fetchInit } = init ?? {};
+  const controller = new AbortController();
+  let didTimeout = false;
+
+  const onExternalAbort = () => {
+    controller.abort();
+  };
+
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort();
+    } else {
+      externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+  }
+
+  const timer =
+    timeoutMs > 0
+      ? setTimeout(() => {
+          didTimeout = true;
+          controller.abort();
+        }, timeoutMs)
+      : null;
+
   try {
-    const res = await fetch(url, init);
+    const res = await fetch(url, {
+      ...fetchInit,
+      signal: controller.signal,
+    });
     const rawText = await res.text();
     const contentType = res.headers.get('content-type') ?? '';
 
@@ -45,6 +79,7 @@ export async function safeFetchJson<T>(
         status: res.status,
         data: parsed as T | null,
         error: errMsg,
+        timedOut: res.status === 408,
       };
     }
 
@@ -55,11 +90,35 @@ export async function safeFetchJson<T>(
       error: null,
     };
   } catch (err) {
+    if (didTimeout) {
+      return {
+        ok: false,
+        status: 408,
+        data: null,
+        error: 'Request timed out while waiting for the server. Please retry or use manual entry.',
+        timedOut: true,
+      };
+    }
+    if (err instanceof Error && err.name === 'AbortError') {
+      return {
+        ok: false,
+        status: 0,
+        data: null,
+        error: 'Request was cancelled.',
+      };
+    }
     return {
       ok: false,
       status: 0,
       data: null,
       error: err instanceof Error ? err.message : 'Network request failed.',
     };
+  } finally {
+    if (timer !== null) {
+      clearTimeout(timer);
+    }
+    if (externalSignal) {
+      externalSignal.removeEventListener('abort', onExternalAbort);
+    }
   }
 }

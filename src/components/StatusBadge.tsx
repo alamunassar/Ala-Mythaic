@@ -1,5 +1,6 @@
 import { AlertTriangle, CheckCircle2, HelpCircle, ShieldCheck, XCircle } from 'lucide-react';
 import { formatInputConfidence } from '../engine/engineeringEngine';
+import { useI18n } from '../i18n/I18nContext';
 import type {
   ComparisonStatus,
   EngineeringCheckStatus,
@@ -10,6 +11,8 @@ import type {
 type AnyStatus = ComparisonStatus | EngineeringCheckStatus | OverallAuditStatus;
 
 export function StatusIndicator({ status }: { status: AnyStatus }) {
+  const { tr } = useI18n();
+  const label = tr.statuses[status] ?? status;
   const base =
     'inline-flex items-center gap-1.5 px-2 py-0.5 text-xs font-semibold tracking-tight rounded border whitespace-nowrap shrink-0';
 
@@ -20,7 +23,7 @@ export function StatusIndicator({ status }: { status: AnyStatus }) {
       return (
         <span className={`${base} bg-emerald-50 text-emerald-800 border-emerald-200`}>
           <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
-          <span>{status}</span>
+          <span>{label}</span>
         </span>
       );
     case 'WARNING':
@@ -28,7 +31,7 @@ export function StatusIndicator({ status }: { status: AnyStatus }) {
       return (
         <span className={`${base} bg-amber-50 text-amber-800 border-amber-200`}>
           <AlertTriangle className="w-3.5 h-3.5 text-amber-700 shrink-0" />
-          <span>{status}</span>
+          <span>{label}</span>
         </span>
       );
     case 'MISMATCH':
@@ -37,7 +40,7 @@ export function StatusIndicator({ status }: { status: AnyStatus }) {
       return (
         <span className={`${base} bg-red-50 text-red-800 border-red-200`}>
           <XCircle className="w-3.5 h-3.5 text-red-700 shrink-0" />
-          <span>{status}</span>
+          <span>{label}</span>
         </span>
       );
     case 'NOT VERIFIED':
@@ -47,16 +50,17 @@ export function StatusIndicator({ status }: { status: AnyStatus }) {
       return (
         <span className={`${base} bg-slate-100 text-slate-700 border-slate-300`}>
           <HelpCircle className="w-3.5 h-3.5 text-slate-600 shrink-0" />
-          <span>{status}</span>
+          <span>{label}</span>
         </span>
       );
   }
 }
 
 export function InputConfidenceBadge({ confidence }: { confidence: InputConfidenceLevel }) {
+  const { lang } = useI18n();
   const base =
     'inline-flex items-center gap-1.5 px-2 py-0.5 text-[11px] font-semibold tracking-tight rounded border whitespace-nowrap shrink-0';
-  const label = formatInputConfidence(confidence);
+  const label = formatInputConfidence(confidence, lang);
 
   switch (confidence) {
     case 'VERIFIED_INPUTS':

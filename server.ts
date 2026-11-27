@@ -1,11 +1,19 @@
 import 'dotenv/config';
 import express from 'express';
 import fs from 'fs';
+import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import type { EquipmentCategory } from './src/types/mithaq.ts';
 import { sanitizeSpecFieldsByCategory } from './src/utils/categorySpecs.ts';
+import {
+  extractReadableError,
+  generateContentWithFallback,
+  getApiErrorCode,
+  getApiErrorStatus,
+  parseJsonSafely,
+} from './src/utils/aiReliability.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -42,109 +50,7 @@ function getGeminiClient(): GoogleGenAI | null {
   });
 }
 
-function parseJsonSafely<T>(raw: string | undefined): { ok: true; data: T } | { ok: false; preview: string } {
-  if (!raw || !raw.trim()) {
-    return { ok: false, preview: '(empty response)' };
-  }
-  const cleaned = raw
-    .trim()
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/\s*```$/i, '')
-    .trim();
 
-  try {
-    return { ok: true, data: JSON.parse(cleaned) as T };
-  } catch {
-    const firstBrace = cleaned.indexOf('{');
-    const lastBrace = cleaned.lastIndexOf('}');
-    if (firstBrace >= 0 && lastBrace > firstBrace) {
-      try {
-        return {
-          ok: true,
-          data: JSON.parse(cleaned.slice(firstBrace, lastBrace + 1)) as T,
-        };
-      } catch {
-        // fall through
-      }
-    }
-    return { ok: false, preview: cleaned.slice(0, 300) };
-  }
-}
-
-function extractReadableError(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  let msg = raw;
-  try {
-    const parsed = JSON.parse(raw);
-    if (parsed?.error?.message) msg = String(parsed.error.message);
-  } catch {
-    // not raw JSON
-  }
-  if (msg.includes('free_tier_requests') || msg.includes('Quota exceeded')) {
-    return 'Daily free-tier Gemini API quota reached for the primary model. You can continue using manual entry, or select a billing-enabled API key in Settings > Secrets.';
-  }
-  if (msg.includes('high demand') || msg.includes('UNAVAILABLE')) {
-    return 'Gemini API is currently experiencing high demand (temporary 503). Please retry in a moment or enter specifications manually.';
-  }
-  return msg || 'AI extraction request failed.';
-}
-
-function getApiErrorStatus(error: unknown): number {
-  const msg = error instanceof Error ? error.message : String(error);
-  if (
-    msg.includes('free_tier_requests') ||
-    msg.includes('Quota exceeded') ||
-    msg.includes('429') ||
-    msg.includes('RESOURCE_EXHAUSTED')
-  ) {
-    return 429;
-  }
-  return 500;
-}
-
-async function generateContentWithFallback(
-  ai: GoogleGenAI,
-  params: Omit<Parameters<GoogleGenAI['models']['generateContent']>[0], 'model'>,
-) {
-  const models = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
-  let lastError: unknown;
-
-  for (const model of models) {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        const result = await ai.models.generateContent({
-          ...params,
-          model,
-        });
-        console.info(`[MITHAQ-Lab Gemini] Succeeded with model=${model} (attempt ${attempt + 1})`);
-        return result;
-      } catch (err) {
-        lastError = err;
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error(`[MITHAQ-Lab Gemini] ${model} attempt ${attempt + 1} failed:`, msg.slice(0, 220));
-        const isDailyQuota =
-          msg.includes('free_tier_requests') ||
-          msg.includes('PerDay') ||
-          msg.includes('Quota exceeded');
-        if (isDailyQuota) {
-          break; // Immediately move to fallback model
-        }
-        const isTransient =
-          msg.includes('503') ||
-          msg.includes('UNAVAILABLE') ||
-          msg.includes('429') ||
-          msg.includes('RESOURCE_EXHAUSTED');
-        if (!isTransient) {
-          throw err;
-        }
-        if (attempt < 2) {
-          await new Promise((r) => setTimeout(r, 700 * (attempt + 1)));
-        }
-      }
-    }
-  }
-  throw lastError;
-}
 
 const equipmentExtractionSchema = {
   type: Type.OBJECT,
@@ -458,7 +364,10 @@ async function startServer() {
           : [],
       });
     } catch (error) {
-      res.status(getApiErrorStatus(error)).json({ error: extractReadableError(error), code: 'AI_REQUEST_FAILED' });
+      res.status(getApiErrorStatus(error)).json({
+        error: extractReadableError(error),
+        code: getApiErrorCode(error),
+      });
     }
   });
 
@@ -536,7 +445,10 @@ async function startServer() {
       const sanitized = sanitizeSpecFieldsByCategory(resolvedCategory, parsed.data);
       res.json(sanitized);
     } catch (error) {
-      res.status(getApiErrorStatus(error)).json({ error: extractReadableError(error), code: 'AI_REQUEST_FAILED' });
+      res.status(getApiErrorStatus(error)).json({
+        error: extractReadableError(error),
+        code: getApiErrorCode(error),
+      });
     }
   });
 
@@ -645,7 +557,10 @@ async function startServer() {
         sourceFileName: fileName ?? undefined,
       });
     } catch (error) {
-      res.status(getApiErrorStatus(error)).json({ error: extractReadableError(error), code: 'AI_REQUEST_FAILED' });
+      res.status(getApiErrorStatus(error)).json({
+        error: extractReadableError(error),
+        code: getApiErrorCode(error),
+      });
     }
   });
 
@@ -660,23 +575,30 @@ async function startServer() {
         return;
       }
 
-      const { projectSummary } = req.body as { projectSummary?: unknown };
+      const { projectSummary, lang } = req.body as { projectSummary?: unknown; lang?: string };
       if (!projectSummary || typeof projectSummary !== 'object') {
         res.status(400).json({ error: 'Missing structured audit payload.', code: 'INVALID_INPUT' });
         return;
       }
 
+      const isArabic = lang !== 'en';
+      const languageInstruction = isArabic
+        ? 'Write the response in clear, professional Arabic suitable for solar photovoltaic engineers and customers, while keeping international symbols and model numbers in Latin script (Voc, Vmp, Isc, Imp, MPPT, PV, DC, AC, model codes, units).'
+        : 'Write the response in clear, plain English.';
+
       const response = await generateContentWithFallback(ai, {
         contents: `Summarize these verified MITHAQ-Lab audit comparison results and deterministic engineering checks in plain, neutral engineering language for the customer and inspector:\n\n${JSON.stringify(projectSummary, null, 2)}`,
         config: {
-          systemInstruction:
-            'You are an engineering audit technical writer for MITHAQ-Lab. Explain discrepancies and deterministic calculation findings in clear, objective, plain language (3 short paragraphs max). STRICT RULES: (1) Never accuse a supplier or installer of fraud or intentional deception. (2) Never invent specifications or recalculate engineering numbers—quote only the provided results. (3) Never claim an installation is electrically safe.',
+          systemInstruction: `You are an engineering audit technical writer for MITHAQ-Lab. ${languageInstruction} Explain discrepancies and deterministic calculation findings in clear, objective, plain language (3 short paragraphs max). STRICT RULES: (1) Never accuse a supplier or installer of fraud or intentional deception. (2) Never invent specifications or recalculate engineering numbers—quote only the provided results. (3) Never claim an installation is electrically safe.`,
         },
       });
 
       res.json({ commentary: response.text ?? '' });
     } catch (error) {
-      res.status(getApiErrorStatus(error)).json({ error: extractReadableError(error), code: 'AI_REQUEST_FAILED' });
+      res.status(getApiErrorStatus(error)).json({
+        error: extractReadableError(error),
+        code: getApiErrorCode(error),
+      });
     }
   });
 
@@ -716,6 +638,7 @@ async function startServer() {
 
   const isProd = process.env.NODE_ENV === 'production';
   const distPath = path.resolve(__dirname, 'dist');
+  let viteServer: { close: () => Promise<void> } | null = null;
 
   if (isProd && fs.existsSync(distPath)) {
     app.use(express.static(distPath));
@@ -725,16 +648,90 @@ async function startServer() {
   } else {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+        ws: false,
+      },
       appType: 'spa',
     });
+    viteServer = vite;
     app.use(vite.middlewares);
   }
 
-  const port = Number(process.env.PORT ?? 3000);
-  app.listen(port, '0.0.0.0', () => {
-    console.log(`MITHAQ-Lab server listening on http://0.0.0.0:${port}`);
-  });
+  const cliPortIdx = process.argv.indexOf('--port');
+  const cliPort = cliPortIdx !== -1 ? Number(process.argv[cliPortIdx + 1]) : NaN;
+  const envPort = Number(process.env.PORT);
+  const nginxPort = Number(process.env.NGINX_PORT);
+  const resolvedEnvPort =
+    Number.isFinite(envPort) && envPort > 0 && envPort !== nginxPort ? envPort : NaN;
+  const port =
+    Number.isFinite(cliPort) && cliPort > 0
+      ? cliPort
+      : Number.isFinite(resolvedEnvPort)
+        ? resolvedEnvPort
+        : Number(process.env.DEFAULT_APP_PORT ?? 3000);
+
+  const cliHostIdx = process.argv.indexOf('--host');
+  const host =
+    cliHostIdx !== -1 && process.argv[cliHostIdx + 1]
+      ? process.argv[cliHostIdx + 1]
+      : '0.0.0.0';
+
+  const httpServer = http.createServer(app);
+
+  let isShuttingDown = false;
+  const shutdown = async (signal: string) => {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+    console.log(`[MITHAQ-Lab] Received ${signal}, closing server...`);
+    try {
+      await new Promise<void>((resolve) => {
+        httpServer.close(() => resolve());
+        httpServer.closeAllConnections?.();
+        setTimeout(resolve, 1500).unref();
+      });
+      if (viteServer) {
+        await viteServer.close();
+      }
+    } finally {
+      process.exit(0);
+    }
+  };
+
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGHUP', () => void shutdown('SIGHUP'));
+
+  const listenWithRetry = (attempt = 1, maxAttempts = 6) => {
+    const onError = (err: NodeJS.ErrnoException) => {
+      if (err.code === 'EADDRINUSE' && attempt < maxAttempts && !isShuttingDown) {
+        console.warn(
+          `[MITHAQ-Lab] Port ${port} in use (attempt ${attempt}/${maxAttempts}), retrying in 400ms...`,
+        );
+        setTimeout(() => listenWithRetry(attempt + 1, maxAttempts), 400);
+        return;
+      }
+      console.error(
+        `[MITHAQ-Lab] Failed to bind ${host}:${port} (${err.code ?? err.message}).`,
+      );
+      void viteServer?.close().finally(() => process.exit(1));
+    };
+
+    httpServer.once('error', onError);
+    httpServer.listen(port, host, () => {
+      httpServer.off('error', onError);
+      httpServer.on('error', (err) => {
+        console.error('[MITHAQ-Lab] HTTP server error:', err);
+      });
+      console.log(`MITHAQ-Lab server listening on http://${host}:${port}`);
+    });
+  };
+
+  listenWithRetry();
 }
 
-startServer();
+startServer().catch((err) => {
+  console.error('[MITHAQ-Lab] Fatal server startup error:', err);
+  process.exit(1);
+});

@@ -1,3 +1,5 @@
+import { getTranslations, ltr, type Language } from '../i18n/translations';
+import { localizeCategoryFieldText } from '../utils/categorySpecs';
 import type {
   ArrayConfiguration,
   AuditSummary,
@@ -23,6 +25,10 @@ export const CATEGORY_LABELS: Record<EquipmentCategory, string> = {
   INVERTER: 'Inverter',
   BATTERY: 'Battery Storage',
 };
+
+export function getCategoryLabel(category: EquipmentCategory, lang: Language = 'en'): string {
+  return getTranslations(lang).categories[category];
+}
 
 const SIMULATED_TEXT_REGEX =
   /\b(SIMULATED(\s+DATA)?|DEMO(NSTRATION)?|PROTOTYPE|SYNTHETIC)\b/i;
@@ -161,50 +167,35 @@ export function projectContainsSimulatedData(project: SolarProject): boolean {
   return false;
 }
 
-export function formatProvenance(p: DataProvenance | string): string {
+export function formatProvenance(p: DataProvenance | string, lang: Language = 'en'): string {
   const norm = normalizeProvenance(p);
-  switch (norm) {
-    case 'AI_EXTRACTED':
-      return 'AI_EXTRACTED (Unverified AI Read)';
-    case 'USER_VERIFIED':
-      return 'USER_VERIFIED (Reviewed Against Source)';
-    case 'MANUAL_ENTRY':
-      return 'MANUAL_ENTRY (Unverified Manual Input)';
-    case 'DATASHEET_VERIFIED':
-      return 'DATASHEET_VERIFIED (Manufacturer Datasheet)';
-    case 'SIMULATED':
-      return 'SIMULATED (Demo / Prototype Only)';
-  }
+  return getTranslations(lang).provenanceFull[norm];
 }
 
 export function shortProvenanceCode(p: DataProvenance | string): DataProvenance {
   return normalizeProvenance(p);
 }
 
-export function formatInputConfidence(level: InputConfidenceLevel): string {
-  switch (level) {
-    case 'VERIFIED_INPUTS':
-      return 'VERIFIED INPUTS';
-    case 'SIMULATED_INPUTS':
-      return 'SIMULATED INPUTS';
-    case 'UNVERIFIED_INPUTS':
-      return 'UNVERIFIED INPUTS';
-    case 'INCOMPLETE_INPUTS':
-      return 'INCOMPLETE INPUTS';
-  }
+export function formatInputConfidence(
+  level: InputConfidenceLevel,
+  lang: Language = 'en',
+): string {
+  return getTranslations(lang).inputConfidence[level];
 }
 
 export function formatQualifiedResult(
   status: EngineeringCheckStatus,
   inputConfidence: InputConfidenceLevel,
+  lang: Language = 'en',
 ): string {
+  const tr = getTranslations(lang);
   if (status === 'INSUFFICIENT DATA') {
-    return 'INSUFFICIENT DATA';
+    return tr.statuses['INSUFFICIENT DATA'];
   }
   if (status === 'FAIL') {
-    return 'FAIL';
+    return tr.statuses.FAIL;
   }
-  return `${status} — ${formatInputConfidence(inputConfidence)}`;
+  return `${tr.statuses[status]} — ${formatInputConfidence(inputConfidence, lang)}`;
 }
 
 export function resolveInputConfidence(
@@ -246,25 +237,42 @@ function normalizeText(value: string | null | undefined): string {
   return (value ?? '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
 }
 
-function formatNum(value: number | null | undefined, unit = ''): string {
+function formatNum(value: number | null | undefined, unit = '', lang: Language = 'en'): string {
   if (value === null || value === undefined || Number.isNaN(value)) {
-    return 'Not specified';
+    return lang === 'ar' ? 'غير محدد' : 'Not specified';
   }
-  return unit ? `${value} ${unit}` : `${value}`;
+  if (!unit) return `${value}`;
+  return lang === 'ar' ? ltr(`${value} ${unit}`) : `${value} ${unit}`;
 }
 
-function summarizeSpec(spec: EquipmentSpec | undefined): string {
-  if (!spec) return 'No record provided';
+function summarizeSpec(spec: EquipmentSpec | undefined, lang: Language = 'en'): string {
+  if (!spec) return lang === 'ar' ? 'لا يوجد سجل' : 'No record provided';
   const parts: string[] = [];
-  if (spec.manufacturer) parts.push(spec.manufacturer);
-  if (spec.model) parts.push(spec.model);
-  if (spec.ratedPowerW !== null) parts.push(`${spec.ratedPowerW} W`);
-  if (spec.capacityKwh !== null) parts.push(`${spec.capacityKwh} kWh`);
-  if (spec.quantity !== null) parts.push(`Qty ${spec.quantity}`);
-  return parts.length > 0 ? parts.join(' · ') : 'Incomplete specification';
+  if (spec.manufacturer) parts.push(lang === 'ar' ? ltr(spec.manufacturer) : spec.manufacturer);
+  if (spec.model) parts.push(lang === 'ar' ? ltr(spec.model) : spec.model);
+  if (spec.ratedPowerW !== null) {
+    parts.push(lang === 'ar' ? ltr(`${spec.ratedPowerW} W`) : `${spec.ratedPowerW} W`);
+  }
+  if (spec.capacityKwh !== null) {
+    parts.push(lang === 'ar' ? ltr(`${spec.capacityKwh} kWh`) : `${spec.capacityKwh} kWh`);
+  }
+  if (spec.quantity !== null) {
+    parts.push(lang === 'ar' ? `الكمية ${ltr(spec.quantity)}` : `Qty ${spec.quantity}`);
+  }
+  return parts.length > 0
+    ? parts.join(' · ')
+    : lang === 'ar'
+      ? 'مواصفات غير مكتملة'
+      : 'Incomplete specification';
 }
 
-export function comparePromisedVsInstalled(project: SolarProject): EquipmentComparisonResult[] {
+export function comparePromisedVsInstalled(
+  project: SolarProject,
+  lang: Language = 'en',
+): EquipmentComparisonResult[] {
+  const isAr = lang === 'ar';
+  const t = <T>(en: T, ar: T): T => (isAr ? ar : en);
+  const unitTxt = isAr ? 'وحدة' : 'units';
   const categories: EquipmentCategory[] = ['PV_MODULE', 'INVERTER', 'BATTERY'];
 
   return categories
@@ -277,7 +285,7 @@ export function comparePromisedVsInstalled(project: SolarProject): EquipmentComp
     .map((category) => {
       const promised = project.promisedEquipment.find((e) => e.category === category);
       const installed = project.installedEquipment.find((e) => e.category === category);
-      const label = CATEGORY_LABELS[category];
+      const label = getCategoryLabel(category, lang);
 
       if (!promised && !installed) {
         return {
@@ -285,10 +293,13 @@ export function comparePromisedVsInstalled(project: SolarProject): EquipmentComp
           label,
           eligibility: 'NO_RECORDS' as ComparisonEligibility,
           status: 'NOT VERIFIED',
-          promisedSummary: 'No promised equipment entered',
-          installedSummary: 'No installed nameplate recorded',
+          promisedSummary: t('No promised equipment entered', 'لم يتم إدخال معدات موعودة'),
+          installedSummary: t('No installed nameplate recorded', 'لم تُسجّل لوحة بيانات للمعدة المركبة'),
           differences: [],
-          missingFields: ['Promised equipment record', 'Installed equipment nameplate'],
+          missingFields: t(
+            ['Promised equipment record', 'Installed equipment nameplate'],
+            ['سجل المعدات الموعودة', 'لوحة بيانات المعدات المركبة'],
+          ),
         };
       }
 
@@ -298,18 +309,26 @@ export function comparePromisedVsInstalled(project: SolarProject): EquipmentComp
           label,
           eligibility: 'UNQUOTED_INSTALLED' as ComparisonEligibility,
           status: 'NOT VERIFIED',
-          promisedSummary: 'Not listed in quotation',
-          installedSummary: summarizeSpec(installed),
+          promisedSummary: t('Not listed in quotation', 'غير مدرجة في عرض السعر'),
+          installedSummary: summarizeSpec(installed, lang),
           differences: [
             {
-              field: 'Quotation Coverage',
-              promised: 'Absent from quotation',
-              installed: summarizeSpec(installed),
+              field: t('Quotation Coverage', 'تغطية عرض السعر'),
+              promised: t('Absent from quotation', 'غير موجودة في عرض السعر'),
+              installed: summarizeSpec(installed, lang),
               status: 'NOT VERIFIED',
-              note: 'Equipment is documented as installed, but no promised quotation line item exists. Excluded from Equipment Match %.',
+              note: t(
+                'Equipment is documented as installed, but no promised quotation line item exists. Excluded from Equipment Match %.',
+                'تم توثيق تركيب المعدة في الموقع، لكن لا يوجد بند مقابل لها في عرض السعر. مستبعدة من نسبة تطابق المواصفات.',
+              ),
             },
           ],
-          missingFields: ['Contractual quotation specification for installed category'],
+          missingFields: [
+            t(
+              'Contractual quotation specification for installed category',
+              'مواصفات عرض السعر التعاقدي للفئة المركبة',
+            ),
+          ],
         };
       }
 
@@ -319,18 +338,23 @@ export function comparePromisedVsInstalled(project: SolarProject): EquipmentComp
           label,
           eligibility: 'MISSING_INSTALLED' as ComparisonEligibility,
           status: 'NOT VERIFIED',
-          promisedSummary: summarizeSpec(promised),
-          installedSummary: 'Not documented on site',
+          promisedSummary: summarizeSpec(promised, lang),
+          installedSummary: t('Not documented on site', 'غير موثقة في الموقع'),
           differences: [
             {
-              field: 'Installed Documentation',
-              promised: summarizeSpec(promised),
-              installed: 'No nameplate recorded',
+              field: t('Installed Documentation', 'توثيق التركيب'),
+              promised: summarizeSpec(promised, lang),
+              installed: t('No nameplate recorded', 'لم تُسجّل لوحة بيانات'),
               status: 'NOT VERIFIED',
-              note: 'Equipment was promised in the quotation, but no installed nameplate record has been logged. Excluded from Equipment Match %.',
+              note: t(
+                'Equipment was promised in the quotation, but no installed nameplate record has been logged. Excluded from Equipment Match %.',
+                'المعدة موعودة في عرض السعر، لكن لم يتم تسجيل لوحة بيانات للمعدة المركبة. مستبعدة من نسبة تطابق المواصفات.',
+              ),
             },
           ],
-          missingFields: ['Installed equipment nameplate record'],
+          missingFields: [
+            t('Installed equipment nameplate record', 'سجل لوحة بيانات المعدة المركبة'),
+          ],
         };
       }
 
@@ -341,147 +365,188 @@ export function comparePromisedVsInstalled(project: SolarProject): EquipmentComp
 
       if (inst.unreadableFields.length > 0) {
         missingFields.push(
-          ...inst.unreadableFields.map((f) => `Unreadable on nameplate: ${f}`),
+          ...inst.unreadableFields.map((f) => {
+            const labelText = localizeCategoryFieldText(category, f, lang);
+            return isAr
+              ? `غير مقروء على لوحة البيانات: ${labelText}`
+              : `Unreadable on nameplate: ${labelText}`;
+          }),
         );
       }
       if (p.uncertainFields.length > 0) {
         missingFields.push(
-          ...p.uncertainFields.map((f) => `Uncertain in quotation: ${f}`),
+          ...p.uncertainFields.map((f) => {
+            const labelText = localizeCategoryFieldText(category, f, lang);
+            return isAr
+              ? `غير مؤكد في عرض السعر: ${labelText}`
+              : `Uncertain in quotation: ${labelText}`;
+          }),
         );
       }
 
       // 1. Manufacturer comparison
       const pMfg = normalizeText(p.manufacturer);
       const iMfg = normalizeText(inst.manufacturer);
-      if (!p.manufacturer || !inst.manufacturer) {
-        missingFields.push('Manufacturer');
+      const missingStr = t('Missing', 'مفقود');
+      if (!pMfg || !iMfg) {
+        missingFields.push(t('Manufacturer', 'الشركة المصنعة'));
         differences.push({
-          field: 'Manufacturer',
-          promised: p.manufacturer ?? 'Missing',
-          installed: inst.manufacturer ?? 'Missing',
+          field: t('Manufacturer', 'الشركة المصنعة'),
+          promised: pMfg && p.manufacturer ? (isAr ? ltr(p.manufacturer) : p.manufacturer) : missingStr,
+          installed: iMfg && inst.manufacturer ? (isAr ? ltr(inst.manufacturer) : inst.manufacturer) : missingStr,
           status: 'NOT VERIFIED',
-          note: 'Manufacturer is missing on quotation or installed record.',
+          note: t(
+            'Manufacturer is missing on quotation or installed record.',
+            'اسم الشركة المصنعة مفقود في عرض السعر أو سجل التركيب.',
+          ),
         });
       } else if (pMfg !== iMfg && !pMfg.includes(iMfg) && !iMfg.includes(pMfg)) {
         differences.push({
-          field: 'Manufacturer',
-          promised: p.manufacturer,
-          installed: inst.manufacturer,
+          field: t('Manufacturer', 'الشركة المصنعة'),
+          promised: isAr ? ltr(p.manufacturer!) : p.manufacturer!,
+          installed: isAr ? ltr(inst.manufacturer!) : inst.manufacturer!,
           status: 'MISMATCH',
-          note: 'Observed nameplate manufacturer differs from the quotation.',
+          note: t(
+            'Observed nameplate manufacturer differs from the quotation.',
+            'الشركة المصنعة على لوحة البيانات المعاينة تختلف عن عرض السعر.',
+          ),
         });
       } else {
         differences.push({
-          field: 'Manufacturer',
-          promised: p.manufacturer,
-          installed: inst.manufacturer,
+          field: t('Manufacturer', 'الشركة المصنعة'),
+          promised: isAr ? ltr(p.manufacturer!) : p.manufacturer!,
+          installed: isAr ? ltr(inst.manufacturer!) : inst.manufacturer!,
           status: 'MATCH',
-          note: 'Manufacturer matches quotation.',
+          note: t('Manufacturer matches quotation.', 'الشركة المصنعة مطابقة لعرض السعر.'),
         });
       }
 
       // 2. Model comparison
       const pModel = normalizeText(p.model);
       const iModel = normalizeText(inst.model);
-      if (!p.model || !inst.model) {
-        missingFields.push('Model Number');
+      if (!pModel || !iModel) {
+        missingFields.push(t('Model Number', 'رقم الطراز'));
         differences.push({
-          field: 'Model Number',
-          promised: p.model ?? 'Missing',
-          installed: inst.model ?? 'Missing',
+          field: t('Model Number', 'رقم الطراز'),
+          promised: pModel && p.model ? (isAr ? ltr(p.model) : p.model) : missingStr,
+          installed: iModel && inst.model ? (isAr ? ltr(inst.model) : inst.model) : missingStr,
           status: 'NOT VERIFIED',
-          note: 'Model identifier missing in quotation or nameplate.',
+          note: t(
+            'Model identifier missing in quotation or nameplate.',
+            'معرّف الطراز مفقود في عرض السعر أو لوحة البيانات.',
+          ),
         });
       } else if (pModel !== iModel) {
         differences.push({
-          field: 'Model Number',
-          promised: p.model,
-          installed: inst.model,
+          field: t('Model Number', 'رقم الطراز'),
+          promised: isAr ? ltr(p.model!) : p.model!,
+          installed: isAr ? ltr(inst.model!) : inst.model!,
           status: 'MISMATCH',
-          note: 'Installed equipment model differs from contractual quotation.',
+          note: t(
+            'Installed equipment model differs from contractual quotation.',
+            'طراز المعدة المركبة يختلف عن الطراز المتعاقد عليه في عرض السعر.',
+          ),
         });
       } else {
         differences.push({
-          field: 'Model Number',
-          promised: p.model,
-          installed: inst.model,
+          field: t('Model Number', 'رقم الطراز'),
+          promised: isAr ? ltr(p.model!) : p.model!,
+          installed: isAr ? ltr(inst.model!) : inst.model!,
           status: 'MATCH',
-          note: 'Exact model designation confirmed.',
+          note: t('Exact model designation confirmed.', 'تم تأكيد تطابق الطراز بالكامل.'),
         });
       }
 
       // 3. Quantity comparison
       if (p.quantity === null || inst.quantity === null) {
-        missingFields.push('Quantity');
+        missingFields.push(t('Quantity', 'الكمية'));
         differences.push({
-          field: 'Quantity',
-          promised: formatNum(p.quantity, 'units'),
-          installed: formatNum(inst.quantity, 'units'),
+          field: t('Quantity', 'الكمية'),
+          promised: formatNum(p.quantity, unitTxt, lang),
+          installed: formatNum(inst.quantity, unitTxt, lang),
           status: 'NOT VERIFIED',
-          note: 'Unit count is missing in one record.',
+          note: t('Unit count is missing in one record.', 'عدد الوحدات مفقود في أحد السجلين.'),
         });
       } else if (inst.quantity !== p.quantity) {
         const diff = inst.quantity - p.quantity;
         differences.push({
-          field: 'Quantity',
-          promised: `${p.quantity} units`,
-          installed: `${inst.quantity} units`,
+          field: t('Quantity', 'الكمية'),
+          promised: isAr ? `${ltr(p.quantity)} ${unitTxt}` : `${p.quantity} units`,
+          installed: isAr ? `${ltr(inst.quantity)} ${unitTxt}` : `${inst.quantity} units`,
           status: diff < 0 ? 'MISMATCH' : 'WARNING',
           note:
             diff < 0
-              ? `Shortfall of ${Math.abs(diff)} unit(s) compared to quotation.`
-              : `${diff} additional unit(s) installed compared to quotation.`,
+              ? t(
+                  `Shortfall of ${Math.abs(diff)} unit(s) compared to quotation.`,
+                  `نقص بمقدار ${ltr(Math.abs(diff))} وحدة مقارنة بعرض السعر.`,
+                )
+              : t(
+                  `${diff} additional unit(s) installed compared to quotation.`,
+                  `تركيب ${ltr(diff)} وحدة إضافية مقارنة بعرض السعر.`,
+                ),
         });
       } else {
         differences.push({
-          field: 'Quantity',
-          promised: `${p.quantity} units`,
-          installed: `${inst.quantity} units`,
+          field: t('Quantity', 'الكمية'),
+          promised: isAr ? `${ltr(p.quantity)} ${unitTxt}` : `${p.quantity} units`,
+          installed: isAr ? `${ltr(inst.quantity)} ${unitTxt}` : `${inst.quantity} units`,
           status: 'MATCH',
-          note: 'Installed unit quantity matches quotation.',
+          note: t('Installed unit quantity matches quotation.', 'الكمية المركبة مطابقة لعرض السعر.'),
         });
       }
 
       // 4. Rated Power (PV & Inverter)
       if (category === 'PV_MODULE' || category === 'INVERTER') {
         if (p.ratedPowerW === null || inst.ratedPowerW === null) {
-          missingFields.push('Rated Power (W)');
+          missingFields.push(t('Rated Power (W)', 'القدرة الاسمية (W)'));
           differences.push({
-            field: 'Unit Rated Power',
-            promised: formatNum(p.ratedPowerW, 'W'),
-            installed: formatNum(inst.ratedPowerW, 'W'),
+            field: t('Unit Rated Power', 'القدرة الاسمية للوحدة'),
+            promised: formatNum(p.ratedPowerW, 'W', lang),
+            installed: formatNum(inst.ratedPowerW, 'W', lang),
             status: 'NOT VERIFIED',
-            note: 'Rated power specification is missing on one record.',
+            note: t(
+              'Rated power specification is missing on one record.',
+              'قيمة القدرة الاسمية مفقودة في أحد السجلين.',
+            ),
           });
         } else if (p.ratedPowerW <= 0) {
           differences.push({
-            field: 'Unit Rated Power',
-            promised: `${p.ratedPowerW} W`,
-            installed: `${inst.ratedPowerW} W`,
+            field: t('Unit Rated Power', 'القدرة الاسمية للوحدة'),
+            promised: isAr ? ltr(`${p.ratedPowerW} W`) : `${p.ratedPowerW} W`,
+            installed: isAr ? ltr(`${inst.ratedPowerW} W`) : `${inst.ratedPowerW} W`,
             status: 'NOT VERIFIED',
-            note: 'Promised rated power must be greater than zero for tolerance comparison.',
+            note: t(
+              'Promised rated power must be greater than zero for tolerance comparison.',
+              'يجب أن تكون القدرة الاسمية الموعودة أكبر من الصفر لإجراء مقارنة التفاوت.',
+            ),
           });
         } else {
           const deltaW = inst.ratedPowerW - p.ratedPowerW;
           const pct = Math.abs(deltaW) / p.ratedPowerW;
           if (pct > 0.02) {
             differences.push({
-              field: 'Unit Rated Power',
-              promised: `${p.ratedPowerW} W`,
-              installed: `${inst.ratedPowerW} W`,
+              field: t('Unit Rated Power', 'القدرة الاسمية للوحدة'),
+              promised: isAr ? ltr(`${p.ratedPowerW} W`) : `${p.ratedPowerW} W`,
+              installed: isAr ? ltr(`${inst.ratedPowerW} W`) : `${inst.ratedPowerW} W`,
               status: 'MISMATCH',
               note:
                 deltaW < 0
-                  ? `Installed unit is ${Math.abs(deltaW)} W (${(pct * 100).toFixed(1)}%) lower than promised.`
-                  : `Installed unit differs by +${deltaW} W (${(pct * 100).toFixed(1)}%).`,
+                  ? t(
+                      `Installed unit is ${Math.abs(deltaW)} W (${(pct * 100).toFixed(1)}%) lower than promised.`,
+                      `قدرة الوحدة المركبة أقل بمقدار ${ltr(`${Math.abs(deltaW)} W`)} (${ltr(`${(pct * 100).toFixed(1)}%`)}) عن الموعود.`,
+                    )
+                  : t(
+                      `Installed unit differs by +${deltaW} W (${(pct * 100).toFixed(1)}%).`,
+                      `قدرة الوحدة المركبة تختلف بمقدار ${ltr(`+${deltaW} W`)} (${ltr(`${(pct * 100).toFixed(1)}%`)}).`,
+                    ),
             });
           } else {
             differences.push({
-              field: 'Unit Rated Power',
-              promised: `${p.ratedPowerW} W`,
-              installed: `${inst.ratedPowerW} W`,
+              field: t('Unit Rated Power', 'القدرة الاسمية للوحدة'),
+              promised: isAr ? ltr(`${p.ratedPowerW} W`) : `${p.ratedPowerW} W`,
+              installed: isAr ? ltr(`${inst.ratedPowerW} W`) : `${inst.ratedPowerW} W`,
               status: 'MATCH',
-              note: 'Rated power matches within tolerance.',
+              note: t('Rated power matches within tolerance.', 'القدرة الاسمية متطابقة ضمن حد السماحية.'),
             });
           }
         }
@@ -499,63 +564,75 @@ export function comparePromisedVsInstalled(project: SolarProject): EquipmentComp
         const iTotalKw = (inst.ratedPowerW * inst.quantity) / 1000;
         const deltaKw = iTotalKw - pTotalKw;
         differences.push({
-          field: 'Total Array Capacity',
-          promised: `${pTotalKw.toFixed(2)} kWp`,
-          installed: `${iTotalKw.toFixed(2)} kWp`,
+          field: t('Total Array Capacity', 'السعة الإجمالية للمصفوفة'),
+          promised: isAr ? ltr(`${pTotalKw.toFixed(2)} kWp`) : `${pTotalKw.toFixed(2)} kWp`,
+          installed: isAr ? ltr(`${iTotalKw.toFixed(2)} kWp`) : `${iTotalKw.toFixed(2)} kWp`,
           status: Math.abs(deltaKw) > 0.05 ? 'MISMATCH' : 'MATCH',
           note:
             Math.abs(deltaKw) > 0.05
-              ? `Net array capacity difference of ${deltaKw > 0 ? '+' : ''}${deltaKw.toFixed(2)} kWp.`
-              : 'Total array DC capacity matches quotation.',
+              ? t(
+                  `Net array capacity difference of ${deltaKw > 0 ? '+' : ''}${deltaKw.toFixed(2)} kWp.`,
+                  `فرق في صافي قدرة المصفوفة بمقدار ${ltr(`${deltaKw > 0 ? '+' : ''}${deltaKw.toFixed(2)} kWp`)}.`,
+                )
+              : t('Total array DC capacity matches quotation.', 'السعة الإجمالية للمصفوفة مطابقة لعرض السعر.'),
         });
       }
 
       if (category === 'BATTERY') {
         if (p.capacityKwh === null || inst.capacityKwh === null) {
-          missingFields.push('Battery Unit Capacity (kWh)');
+          missingFields.push(t('Battery Unit Capacity (kWh)', 'سعة وحدة البطارية (kWh)'));
           differences.push({
-            field: 'Unit Storage Capacity',
-            promised: formatNum(p.capacityKwh, 'kWh'),
-            installed: formatNum(inst.capacityKwh, 'kWh'),
+            field: t('Unit Storage Capacity', 'سعة التخزين للوحدة'),
+            promised: formatNum(p.capacityKwh, 'kWh', lang),
+            installed: formatNum(inst.capacityKwh, 'kWh', lang),
             status: 'NOT VERIFIED',
-            note: 'Battery kWh rating is missing on one record.',
+            note: t(
+              'Battery kWh rating is missing on one record.',
+              'تصنيف سعة البطارية (kWh) مفقود في أحد السجلين.',
+            ),
           });
         } else {
           const pTotalKwh = p.capacityKwh * (p.quantity ?? 1);
           const iTotalKwh = inst.capacityKwh * (inst.quantity ?? 1);
           const deltaKwh = iTotalKwh - pTotalKwh;
           differences.push({
-            field: 'Total Battery Capacity',
-            promised: `${pTotalKwh.toFixed(2)} kWh`,
-            installed: `${iTotalKwh.toFixed(2)} kWh`,
+            field: t('Total Battery Capacity', 'السعة التخزينية الإجمالية للبطاريات'),
+            promised: isAr ? ltr(`${pTotalKwh.toFixed(2)} kWh`) : `${pTotalKwh.toFixed(2)} kWh`,
+            installed: isAr ? ltr(`${iTotalKwh.toFixed(2)} kWh`) : `${iTotalKwh.toFixed(2)} kWh`,
             status: Math.abs(deltaKwh) > 0.1 ? 'MISMATCH' : 'MATCH',
             note:
               Math.abs(deltaKwh) > 0.1
-                ? `Total storage capacity variance of ${deltaKwh > 0 ? '+' : ''}${deltaKwh.toFixed(2)} kWh.`
-                : 'Total storage capacity matches quotation.',
+                ? t(
+                    `Total storage capacity variance of ${deltaKwh > 0 ? '+' : ''}${deltaKwh.toFixed(2)} kWh.`,
+                    `انحراف في إجمالي السعة التخزينية بمقدار ${ltr(`${deltaKwh > 0 ? '+' : ''}${deltaKwh.toFixed(2)} kWh`)}.`,
+                  )
+                : t('Total storage capacity matches quotation.', 'إجمالي السعة التخزينية مطابق لعرض السعر.'),
           });
         }
 
         if (p.nominalVoltageV !== null || inst.nominalVoltageV !== null) {
           if (p.nominalVoltageV === null || inst.nominalVoltageV === null) {
-            missingFields.push('Battery Nominal Voltage (V)');
+            missingFields.push(t('Battery Nominal Voltage (V)', 'الجهد الاسمي للبطارية (V)'));
             differences.push({
-              field: 'Nominal Voltage',
-              promised: formatNum(p.nominalVoltageV, 'V'),
-              installed: formatNum(inst.nominalVoltageV, 'V'),
+              field: t('Nominal Voltage', 'الجهد الاسمي'),
+              promised: formatNum(p.nominalVoltageV, 'V', lang),
+              installed: formatNum(inst.nominalVoltageV, 'V', lang),
               status: 'NOT VERIFIED',
-              note: 'Battery nominal voltage is missing on one record.',
+              note: t(
+                'Battery nominal voltage is missing on one record.',
+                'الجهد الاسمي للبطارية مفقود في أحد السجلين.',
+              ),
             });
           } else {
             differences.push({
-              field: 'Nominal Voltage',
-              promised: `${p.nominalVoltageV} V`,
-              installed: `${inst.nominalVoltageV} V`,
+              field: t('Nominal Voltage', 'الجهد الاسمي'),
+              promised: isAr ? ltr(`${p.nominalVoltageV} V`) : `${p.nominalVoltageV} V`,
+              installed: isAr ? ltr(`${inst.nominalVoltageV} V`) : `${inst.nominalVoltageV} V`,
               status: p.nominalVoltageV === inst.nominalVoltageV ? 'MATCH' : 'MISMATCH',
               note:
                 p.nominalVoltageV === inst.nominalVoltageV
-                  ? 'Battery nominal voltage matches quotation.'
-                  : 'Battery nominal voltage differs from quotation.',
+                  ? t('Battery nominal voltage matches quotation.', 'الجهد الاسمي للبطارية مطابق لعرض السعر.')
+                  : t('Battery nominal voltage differs from quotation.', 'الجهد الاسمي للبطارية يختلف عن عرض السعر.'),
             });
           }
         }
@@ -565,78 +642,106 @@ export function comparePromisedVsInstalled(project: SolarProject): EquipmentComp
       if (category === 'INVERTER') {
         if (p.maxPvInputVoltageV !== null || inst.maxPvInputVoltageV !== null) {
           if (p.maxPvInputVoltageV === null || inst.maxPvInputVoltageV === null) {
-            missingFields.push('Inverter Max PV Input Voltage (V)');
+            missingFields.push(t('Inverter Max PV Input Voltage (V)', 'أقصى جهد دخل PV للعاكس (V)'));
             differences.push({
-              field: 'Max PV Input Voltage',
-              promised: formatNum(p.maxPvInputVoltageV, 'V'),
-              installed: formatNum(inst.maxPvInputVoltageV, 'V'),
+              field: t('Max PV Input Voltage', 'أقصى جهد دخل للخلايا'),
+              promised: formatNum(p.maxPvInputVoltageV, 'V', lang),
+              installed: formatNum(inst.maxPvInputVoltageV, 'V', lang),
               status: 'NOT VERIFIED',
-              note: 'Max PV input voltage rating is missing on one record.',
+              note: t(
+                'Max PV input voltage rating is missing on one record.',
+                'قيمة أقصى جهد دخل للخلايا مفقودة في أحد السجلين.',
+              ),
             });
           } else {
             const vDiff = inst.maxPvInputVoltageV - p.maxPvInputVoltageV;
             differences.push({
-              field: 'Max PV Input Voltage',
-              promised: `${p.maxPvInputVoltageV} V`,
-              installed: `${inst.maxPvInputVoltageV} V`,
+              field: t('Max PV Input Voltage', 'أقصى جهد دخل للخلايا'),
+              promised: isAr ? ltr(`${p.maxPvInputVoltageV} V`) : `${p.maxPvInputVoltageV} V`,
+              installed: isAr ? ltr(`${inst.maxPvInputVoltageV} V`) : `${inst.maxPvInputVoltageV} V`,
               status: vDiff < 0 ? 'MISMATCH' : vDiff > 0 ? 'WARNING' : 'MATCH',
               note:
                 vDiff < 0
-                  ? `Installed inverter has a lower PV voltage limit (${vDiff} V).`
+                  ? t(
+                      `Installed inverter has a lower PV voltage limit (${vDiff} V).`,
+                      `العاكس المركب له حد جهد دخل أقل (${ltr(`${vDiff} V`)}).`,
+                    )
                   : vDiff > 0
-                    ? `Installed inverter has a higher PV voltage limit (+${vDiff} V).`
-                    : 'Max PV input voltage matches quotation.',
+                    ? t(
+                        `Installed inverter has a higher PV voltage limit (+${vDiff} V).`,
+                        `العاكس المركب له حد جهد دخل أعلى (${ltr(`+${vDiff} V`)}).`,
+                      )
+                    : t('Max PV input voltage matches quotation.', 'أقصى جهد دخل للخلايا مطابق لعرض السعر.'),
             });
           }
         }
 
         if (p.nominalVoltageV !== null || inst.nominalVoltageV !== null) {
           if (p.nominalVoltageV === null || inst.nominalVoltageV === null) {
-            missingFields.push('Inverter Nominal Battery / Bus Voltage (V)');
+            missingFields.push(
+              t('Inverter Nominal Battery / Bus Voltage (V)', 'الجهد الاسمي لناقل البطارية بالعاكس (V)'),
+            );
             differences.push({
-              field: 'Nominal Battery / Bus Voltage',
-              promised: formatNum(p.nominalVoltageV, 'V'),
-              installed: formatNum(inst.nominalVoltageV, 'V'),
+              field: t('Nominal Battery / Bus Voltage', 'الجهد الاسمي لناقل البطارية'),
+              promised: formatNum(p.nominalVoltageV, 'V', lang),
+              installed: formatNum(inst.nominalVoltageV, 'V', lang),
               status: 'NOT VERIFIED',
-              note: 'Nominal DC bus voltage is missing on one record.',
+              note: t(
+                'Nominal DC bus voltage is missing on one record.',
+                'الجهد الاسمي لناقل التيار المستمر مفقود في أحد السجلين.',
+              ),
             });
           } else {
             differences.push({
-              field: 'Nominal Battery / Bus Voltage',
-              promised: `${p.nominalVoltageV} V`,
-              installed: `${inst.nominalVoltageV} V`,
+              field: t('Nominal Battery / Bus Voltage', 'الجهد الاسمي لناقل البطارية'),
+              promised: isAr ? ltr(`${p.nominalVoltageV} V`) : `${p.nominalVoltageV} V`,
+              installed: isAr ? ltr(`${inst.nominalVoltageV} V`) : `${inst.nominalVoltageV} V`,
               status: p.nominalVoltageV === inst.nominalVoltageV ? 'MATCH' : 'MISMATCH',
               note:
                 p.nominalVoltageV === inst.nominalVoltageV
-                  ? 'Nominal DC bus voltage matches.'
-                  : 'Nominal DC bus voltage differs from quotation.',
+                  ? t('Nominal DC bus voltage matches.', 'الجهد الاسمي لناقل التيار المستمر متطابق.')
+                  : t('Nominal DC bus voltage differs from quotation.', 'الجهد الاسمي لناقل التيار المستمر يختلف عن عرض السعر.'),
             });
           }
         }
 
         if (p.maxPvOperatingCurrentA !== null || inst.maxPvOperatingCurrentA !== null) {
           if (p.maxPvOperatingCurrentA === null || inst.maxPvOperatingCurrentA === null) {
-            missingFields.push('Inverter Max PV Operating Current (Imp limit)');
+            missingFields.push(
+              t(
+                'Inverter Max PV Operating Current (Imp limit)',
+                'أقصى تيار تشغيل PV للعاكس (حد Imp)',
+              ),
+            );
             differences.push({
-              field: 'Max PV Operating Current',
-              promised: formatNum(p.maxPvOperatingCurrentA, 'A'),
-              installed: formatNum(inst.maxPvOperatingCurrentA, 'A'),
+              field: t('Max PV Operating Current', 'أقصى تيار تشغيل للخلايا (Imp)'),
+              promised: formatNum(p.maxPvOperatingCurrentA, 'A', lang),
+              installed: formatNum(inst.maxPvOperatingCurrentA, 'A', lang),
               status: 'NOT VERIFIED',
-              note: 'Max PV operating current rating is missing on one record.',
+              note: t(
+                'Max PV operating current rating is missing on one record.',
+                'تصنيف أقصى تيار تشغيل للخلايا مفقود في أحد السجلين.',
+              ),
             });
           } else {
             const cDiff = inst.maxPvOperatingCurrentA - p.maxPvOperatingCurrentA;
             differences.push({
-              field: 'Max PV Operating Current',
-              promised: `${p.maxPvOperatingCurrentA} A`,
-              installed: `${inst.maxPvOperatingCurrentA} A`,
+              field: t('Max PV Operating Current', 'أقصى تيار تشغيل للخلايا (Imp)'),
+              promised: isAr ? ltr(`${p.maxPvOperatingCurrentA} A`) : `${p.maxPvOperatingCurrentA} A`,
+              installed: isAr ? ltr(`${inst.maxPvOperatingCurrentA} A`) : `${inst.maxPvOperatingCurrentA} A`,
               status: cDiff < 0 ? 'MISMATCH' : cDiff > 0 ? 'WARNING' : 'MATCH',
               note:
                 cDiff < 0
-                  ? `Installed inverter operating current limit is ${Math.abs(cDiff)} A lower than promised.`
+                  ? t(
+                      `Installed inverter operating current limit is ${Math.abs(cDiff)} A lower than promised.`,
+                      `حد تيار التشغيل في العاكس المركب أقل بمقدار ${ltr(`${Math.abs(cDiff)} A`)} عن الموعود.`,
+                    )
                   : cDiff > 0
-                    ? `Installed inverter operating current limit is +${cDiff} A higher.`
-                    : 'Max PV operating current matches quotation.',
+                    ? t(
+                        `Installed inverter operating current limit is +${cDiff} A higher.`,
+                        `حد تيار التشغيل في العاكس المركب أعلى بمقدار ${ltr(`+${cDiff} A`)}.`,
+                      )
+                    : t('Max PV operating current matches quotation.', 'أقصى تيار تشغيل للخلايا مطابق لعرض السعر.'),
             });
           }
         }
@@ -646,27 +751,41 @@ export function comparePromisedVsInstalled(project: SolarProject): EquipmentComp
             p.maxPvShortCircuitCurrentA === null ||
             inst.maxPvShortCircuitCurrentA === null
           ) {
-            missingFields.push('Inverter Max PV Short-Circuit Current (Isc limit)');
+            missingFields.push(
+              t(
+                'Inverter Max PV Short-Circuit Current (Isc limit)',
+                'أقصى تيار قصر PV للعاكس (حد Isc)',
+              ),
+            );
             differences.push({
-              field: 'Max PV Short-Circuit Current',
-              promised: formatNum(p.maxPvShortCircuitCurrentA, 'A'),
-              installed: formatNum(inst.maxPvShortCircuitCurrentA, 'A'),
+              field: t('Max PV Short-Circuit Current', 'أقصى تيار قصر للخلايا (Isc)'),
+              promised: formatNum(p.maxPvShortCircuitCurrentA, 'A', lang),
+              installed: formatNum(inst.maxPvShortCircuitCurrentA, 'A', lang),
               status: 'NOT VERIFIED',
-              note: 'Max PV short-circuit current rating is missing on one record.',
+              note: t(
+                'Max PV short-circuit current rating is missing on one record.',
+                'تصنيف أقصى تيار قصر للخلايا مفقود في أحد السجلين.',
+              ),
             });
           } else {
             const scDiff = inst.maxPvShortCircuitCurrentA - p.maxPvShortCircuitCurrentA;
             differences.push({
-              field: 'Max PV Short-Circuit Current',
-              promised: `${p.maxPvShortCircuitCurrentA} A`,
-              installed: `${inst.maxPvShortCircuitCurrentA} A`,
+              field: t('Max PV Short-Circuit Current', 'أقصى تيار قصر للخلايا (Isc)'),
+              promised: isAr ? ltr(`${p.maxPvShortCircuitCurrentA} A`) : `${p.maxPvShortCircuitCurrentA} A`,
+              installed: isAr ? ltr(`${inst.maxPvShortCircuitCurrentA} A`) : `${inst.maxPvShortCircuitCurrentA} A`,
               status: scDiff < 0 ? 'MISMATCH' : scDiff > 0 ? 'WARNING' : 'MATCH',
               note:
                 scDiff < 0
-                  ? `Installed inverter short-circuit current limit is ${Math.abs(scDiff)} A lower than promised.`
+                  ? t(
+                      `Installed inverter short-circuit current limit is ${Math.abs(scDiff)} A lower than promised.`,
+                      `حد تيار القصر في العاكس المركب أقل بمقدار ${ltr(`${Math.abs(scDiff)} A`)} عن الموعود.`,
+                    )
                   : scDiff > 0
-                    ? `Installed inverter short-circuit current limit is +${scDiff} A higher.`
-                    : 'Max PV short-circuit current matches quotation.',
+                    ? t(
+                        `Installed inverter short-circuit current limit is +${scDiff} A higher.`,
+                        `حد تيار القصر في العاكس المركب أعلى بمقدار ${ltr(`+${scDiff} A`)}.`,
+                      )
+                    : t('Max PV short-circuit current matches quotation.', 'أقصى تيار قصر للخلايا مطابق لعرض السعر.'),
             });
           }
         }
@@ -675,7 +794,12 @@ export function comparePromisedVsInstalled(project: SolarProject): EquipmentComp
       // 7. Provenance completeness tracking
       const instProv = resolveEquipmentProvenance(inst, project.isDemo);
       if (instProv === 'AI_EXTRACTED') {
-        missingFields.push('User confirmation of AI-extracted nameplate fields');
+        missingFields.push(
+          t(
+            'User confirmation of AI-extracted nameplate fields',
+            'تأكيد المستخدم لحقول لوحة البيانات المستخرجة بالذكاء الاصطناعي',
+          ),
+        );
       }
 
       let status: ComparisonStatus = 'MATCH';
@@ -700,8 +824,8 @@ export function comparePromisedVsInstalled(project: SolarProject): EquipmentComp
         label,
         eligibility: 'ELIGIBLE' as ComparisonEligibility,
         status,
-        promisedSummary: summarizeSpec(p),
-        installedSummary: summarizeSpec(inst),
+        promisedSummary: summarizeSpec(p, lang),
+        installedSummary: summarizeSpec(inst, lang),
         differences,
         missingFields: Array.from(new Set(missingFields)),
       };
@@ -712,35 +836,44 @@ function getFieldSourceTag(
   spec: EquipmentSpec | undefined,
   fieldKey: string,
   projectIsDemo: boolean,
+  lang: Language = 'en',
 ): { source: string; provenance: DataProvenance | 'MISSING' } {
-  if (!spec) return { source: 'Missing', provenance: 'MISSING' };
+  const tags = getTranslations(lang).provenanceSourceTag;
+  if (!spec) return { source: tags.missing, provenance: 'MISSING' };
   const prov = getFieldProvenance(spec, fieldKey, projectIsDemo);
   switch (prov) {
     case 'SIMULATED':
-      return { source: 'SIMULATED (Demo/Prototype Record)', provenance: prov };
+      return { source: tags.simulatedEquipment, provenance: prov };
     case 'DATASHEET_VERIFIED':
       return {
-        source: `DATASHEET_VERIFIED${spec.datasheetFileName ? ` (${spec.datasheetFileName})` : ''}`,
+        source: spec.datasheetFileName
+          ? `${tags.datasheetVerified} (${lang === 'ar' ? ltr(spec.datasheetFileName) : spec.datasheetFileName})`
+          : tags.datasheetVerified,
         provenance: prov,
       };
     case 'USER_VERIFIED':
-      return { source: 'USER_VERIFIED (Nameplate/Source Confirmed)', provenance: prov };
+      return { source: tags.userVerified, provenance: prov };
     case 'AI_EXTRACTED':
-      return { source: 'AI_EXTRACTED (Unverified AI Read)', provenance: prov };
+      return { source: tags.aiExtracted, provenance: prov };
     case 'MANUAL_ENTRY':
-      return { source: 'MANUAL_ENTRY (Unverified Manual Input)', provenance: prov };
+      return { source: tags.manualEntry, provenance: prov };
   }
 }
 
 function getArraySourceTag(
   config: ArrayConfiguration,
   projectIsDemo: boolean,
+  lang: Language = 'en',
 ): { source: string; provenance: DataProvenance } {
+  const tr = getTranslations(lang);
   const prov = resolveArrayProvenance(config, projectIsDemo);
   if (prov === 'SIMULATED') {
-    return { source: 'SIMULATED (Demo Array Config)', provenance: 'SIMULATED' };
+    return { source: tr.provenanceSourceTag.simulatedArray, provenance: 'SIMULATED' };
   }
-  return { source: `${prov} (Array Topology Input)`, provenance: prov };
+  return {
+    source: `${tr.provenanceShort[prov]} (${tr.provenanceSourceTag.arrayInput})`,
+    provenance: prov,
+  };
 }
 
 function makeEquipmentTrace(
@@ -751,8 +884,9 @@ function makeEquipmentTrace(
   spec: EquipmentSpec | undefined,
   fieldKey: string,
   projectIsDemo: boolean,
+  lang: Language = 'en',
 ): EngineeringInputTrace {
-  const tag = getFieldSourceTag(spec, fieldKey, projectIsDemo);
+  const tag = getFieldSourceTag(spec, fieldKey, projectIsDemo, lang);
   return {
     label,
     symbol,
@@ -784,9 +918,10 @@ function makeConfigTrace(
 
 function buildCheckResult(
   base: Omit<EngineeringCheckResult, 'inputConfidence' | 'qualifiedResult'>,
+  lang: Language = 'en',
 ): EngineeringCheckResult {
   const inputConfidence = resolveInputConfidence(base.status, base.inputs);
-  const qualifiedResult = formatQualifiedResult(base.status, inputConfidence);
+  const qualifiedResult = formatQualifiedResult(base.status, inputConfidence, lang);
   return {
     ...base,
     inputConfidence,
@@ -794,33 +929,43 @@ function buildCheckResult(
   };
 }
 
-export function runEngineeringValidation(project: SolarProject): EngineeringCheckResult[] {
+export function runEngineeringValidation(
+  project: SolarProject,
+  lang: Language = 'en',
+): EngineeringCheckResult[] {
+  const isAr = lang === 'ar';
+  const t = <T>(en: T, ar: T): T => (isAr ? ar : en);
+  const modUnit = t('modules', 'ألواح');
+  const strUnit = t('strings', 'سلاسل');
+  const missingTxt = t('Missing', 'مفقود');
+
   const pv = project.installedEquipment.find((e) => e.category === 'PV_MODULE');
   const inverter = project.installedEquipment.find((e) => e.category === 'INVERTER');
   const battery = project.installedEquipment.find((e) => e.category === 'BATTERY');
   const cfg = project.arrayConfig;
   const isDemo = project.isDemo;
 
-  const arrTag = getArraySourceTag(cfg, isDemo);
+  const arrTag = getArraySourceTag(cfg, isDemo, lang);
 
   const checks: EngineeringCheckResult[] = [];
 
   // 1. PV String STC Open-Circuit Voltage vs Inverter Max PV Input Voltage
   {
     const inputs: EngineeringInputTrace[] = [
-      makeConfigTrace('Modules in Series', 'Ns', cfg.modulesPerString, 'modules', arrTag),
-      makeEquipmentTrace('Module Voc (STC)', 'Voc_mod', pv?.vocV ?? null, 'V', pv, 'vocV', isDemo),
+      makeConfigTrace(t('Modules in Series', 'عدد الألواح على التوالي'), 'Ns', cfg.modulesPerString, modUnit, arrTag),
+      makeEquipmentTrace(t('Module Voc (STC)', 'جهد الدائرة المفتوحة للوح (Voc)'), 'Voc_mod', pv?.vocV ?? null, 'V', pv, 'vocV', isDemo, lang),
       makeEquipmentTrace(
-        'Inverter Max PV Voltage',
+        t('Inverter Max PV Voltage', 'أقصى جهد دخل للعاكس'),
         'Vdc_max',
         inverter?.maxPvInputVoltageV ?? null,
         'V',
         inverter,
         'maxPvInputVoltageV',
         isDemo,
+        lang,
       ),
     ];
-    const missing = inputs.filter((i) => i.value === null).map((i) => `${i.label} (${i.symbol})`);
+    const missing = inputs.filter((i) => i.value === null).map((i) => `${i.label} (${ltr(i.symbol)})`);
 
     if (
       missing.length > 0 ||
@@ -834,48 +979,69 @@ export function runEngineeringValidation(project: SolarProject): EngineeringChec
       checks.push(
         buildCheckResult({
           id: 'check-pv-voc-stc',
-          title: 'PV String Voltage (STC) vs. Inverter Max DC Input',
+          title: t(
+            'PV String Voltage (STC) vs. Inverter Max DC Input',
+            'جهد الدائرة المفتوحة للسلسلة (STC) مقابل أقصى جهد دخل للعاكس',
+          ),
           category: 'PV_STRING',
           status: 'INSUFFICIENT DATA',
           formula: 'Voc_string = Ns × Voc_mod ≤ Vdc_max',
           inputs,
           calculatedValue: null,
           calculatedUnit: 'V',
-          limitLabel: 'Inverter Max PV Input Voltage',
-          limitValue: inverter?.maxPvInputVoltageV ? `${inverter.maxPvInputVoltageV} V` : 'Missing',
+          limitLabel: t('Inverter Max PV Input Voltage', 'أقصى جهد دخل للعاكس'),
+          limitValue: inverter?.maxPvInputVoltageV
+            ? (isAr ? ltr(`${inverter.maxPvInputVoltageV} V`) : `${inverter.maxPvInputVoltageV} V`)
+            : missingTxt,
           missingInputs:
-            missing.length > 0 ? missing : ['Valid positive Ns, Voc_mod, and Vdc_max'],
-          explanation:
+            missing.length > 0
+              ? missing
+              : [t('Valid positive Ns, Voc_mod, and Vdc_max', 'قيم موجبة صالحة لكل من Ns و Voc_mod و Vdc_max')],
+          explanation: t(
             'Cannot validate string open-circuit voltage without valid series count, module Voc, and inverter Vdc_max.',
-        }),
+            'يتعذر التحقق من جهد الدائرة المفتوحة للسلسلة دون توفر عدد الألواح على التوالي وجهد Voc للوح وأقصى جهد Vdc_max للعاكس.',
+          ),
+        }, lang),
       );
     } else {
       const vocString = Number((cfg.modulesPerString * pv.vocV).toFixed(2));
       const limit = inverter.maxPvInputVoltageV;
       let status: EngineeringCheckResult['status'] = 'PASS';
-      let explanation = `String Voc (${vocString} V) is within the ${limit} V inverter maximum DC input limit with ${((1 - vocString / limit) * 100).toFixed(1)}% headroom.`;
+      let explanation = t(
+        `String Voc (${vocString} V) is within the ${limit} V inverter maximum DC input limit with ${((1 - vocString / limit) * 100).toFixed(1)}% headroom.`,
+        `جهد الدائرة المفتوحة للسلسلة (${ltr(`${vocString} V`)}) يقع ضمن الحد الأقصى لدخل العاكس (${ltr(`${limit} V`)}) بهامش أمان قدره ${ltr(`${((1 - vocString / limit) * 100).toFixed(1)}%`)}.`,
+      );
       if (vocString > limit) {
         status = 'FAIL';
-        explanation = `String Voc (${vocString} V) exceeds the inverter maximum PV input voltage (${limit} V) by ${(vocString - limit).toFixed(2)} V even at 25°C STC.`;
+        explanation = t(
+          `String Voc (${vocString} V) exceeds the inverter maximum PV input voltage (${limit} V) by ${(vocString - limit).toFixed(2)} V even at 25°C STC.`,
+          `جهد الدائرة المفتوحة للسلسلة (${ltr(`${vocString} V`)}) يتجاوز الحد الأقصى لدخل العاكس (${ltr(`${limit} V`)}) بمقدار ${ltr(`${(vocString - limit).toFixed(2)} V`)} حتى عند ظروف STC (25°C).`,
+        );
       } else if (vocString > limit * 0.9) {
         status = 'WARNING';
-        explanation = `String Voc (${vocString} V) is above 90% of the ${limit} V inverter limit; low ambient temperatures could push Voc past Vdc_max.`;
+        explanation = t(
+          `String Voc (${vocString} V) is above 90% of the ${limit} V inverter limit; low ambient temperatures could push Voc past Vdc_max.`,
+          `جهد السلسلة (${ltr(`${vocString} V`)}) يتجاوز ${ltr('90%')} من حد العاكس (${ltr(`${limit} V`)})؛ قد تؤدي درجات الحرارة المنخفضة إلى تجاوز الحد الأقصى Vdc_max.`,
+        );
       }
       checks.push(
         buildCheckResult({
           id: 'check-pv-voc-stc',
-          title: 'PV String Voltage (STC) vs. Inverter Max DC Input',
+          title: t(
+            'PV String Voltage (STC) vs. Inverter Max DC Input',
+            'جهد الدائرة المفتوحة للسلسلة (STC) مقابل أقصى جهد دخل للعاكس',
+          ),
           category: 'PV_STRING',
           status,
           formula: 'Voc_string = Ns × Voc_mod',
           inputs,
           calculatedValue: vocString,
           calculatedUnit: 'V',
-          limitLabel: 'Inverter Max PV Input Voltage',
-          limitValue: `≤ ${limit} V`,
+          limitLabel: t('Inverter Max PV Input Voltage', 'أقصى جهد دخل للعاكس'),
+          limitValue: isAr ? ltr(`≤ ${limit} V`) : `≤ ${limit} V`,
           missingInputs: [],
           explanation,
-        }),
+        }, lang),
       );
     }
   }
@@ -883,29 +1049,31 @@ export function runEngineeringValidation(project: SolarProject): EngineeringChec
   // 2. Temperature-Corrected Cold-Weather Voc
   {
     const inputs: EngineeringInputTrace[] = [
-      makeConfigTrace('Modules in Series', 'Ns', cfg.modulesPerString, 'modules', arrTag),
-      makeEquipmentTrace('Module Voc (STC)', 'Voc_mod', pv?.vocV ?? null, 'V', pv, 'vocV', isDemo),
+      makeConfigTrace(t('Modules in Series', 'عدد الألواح على التوالي'), 'Ns', cfg.modulesPerString, modUnit, arrTag),
+      makeEquipmentTrace(t('Module Voc (STC)', 'جهد الدائرة المفتوحة للوح (Voc)'), 'Voc_mod', pv?.vocV ?? null, 'V', pv, 'vocV', isDemo, lang),
       makeEquipmentTrace(
-        'Voc Temp. Coefficient',
+        t('Voc Temp. Coefficient', 'معامل الحرارة لجهد Voc'),
         'β_Voc',
         pv?.tempCoeffVocPctPerC ?? null,
         '%/°C',
         pv,
         'tempCoeffVocPctPerC',
         isDemo,
+        lang,
       ),
-      makeConfigTrace('Min Site Ambient Temp', 'T_min', cfg.minAmbientTempC, '°C', arrTag),
+      makeConfigTrace(t('Min Site Ambient Temp', 'أدنى حرارة محيطة بالموقع'), 'T_min', cfg.minAmbientTempC, '°C', arrTag),
       makeEquipmentTrace(
-        'Inverter Max PV Voltage',
+        t('Inverter Max PV Voltage', 'أقصى جهد دخل للعاكس'),
         'Vdc_max',
         inverter?.maxPvInputVoltageV ?? null,
         'V',
         inverter,
         'maxPvInputVoltageV',
         isDemo,
+        lang,
       ),
     ];
-    const missing = inputs.filter((i) => i.value === null).map((i) => `${i.label} (${i.symbol})`);
+    const missing = inputs.filter((i) => i.value === null).map((i) => `${i.label} (${ltr(i.symbol)})`);
 
     if (
       missing.length > 0 ||
@@ -924,22 +1092,29 @@ export function runEngineeringValidation(project: SolarProject): EngineeringChec
       checks.push(
         buildCheckResult({
           id: 'check-thermal-voc',
-          title: 'Temperature-Corrected Open-Circuit Voltage (Cold Weather)',
+          title: t(
+            'Temperature-Corrected Open-Circuit Voltage (Cold Weather)',
+            'جهد الدائرة المفتوحة المصحح حرارياً (الطقس البارد)',
+          ),
           category: 'THERMAL_VOC',
           status: 'INSUFFICIENT DATA',
           formula: 'Voc_cold = Ns × Voc_mod × [1 + (β_Voc / 100) × (T_min − 25)]',
           inputs,
           calculatedValue: null,
           calculatedUnit: 'V',
-          limitLabel: 'Inverter Max PV Input Voltage',
+          limitLabel: t('Inverter Max PV Input Voltage', 'أقصى جهد دخل للعاكس'),
           limitValue: inverter?.maxPvInputVoltageV
-            ? `≤ ${inverter.maxPvInputVoltageV} V`
-            : 'Missing',
+            ? (isAr ? ltr(`≤ ${inverter.maxPvInputVoltageV} V`) : `≤ ${inverter.maxPvInputVoltageV} V`)
+            : missingTxt,
           missingInputs:
-            missing.length > 0 ? missing : ['Valid positive Ns, Voc_mod, and Vdc_max'],
-          explanation:
+            missing.length > 0
+              ? missing
+              : [t('Valid positive Ns, Voc_mod, and Vdc_max', 'قيم موجبة صالحة لكل من Ns و Voc_mod و Vdc_max')],
+          explanation: t(
             'MITHAQ-Lab never assumes temperature coefficients or ambient site temperatures. Enter all missing datasheet and climate inputs to run this check.',
-        }),
+            'لا تفترض MITHAQ-Lab معاملات الحرارة أو درجات الحرارة المناخية أبداً. أدخل جميع بيانات النشرة الفنية والمناخ المفقودة لتنفيذ هذا الفحص.',
+          ),
+        }, lang),
       );
     } else {
       const vocCold = Number(
@@ -951,29 +1126,41 @@ export function runEngineeringValidation(project: SolarProject): EngineeringChec
       );
       const limit = inverter.maxPvInputVoltageV;
       let status: EngineeringCheckResult['status'] = 'PASS';
-      let explanation = `At ${cfg.minAmbientTempC}°C, temperature-corrected Voc is ${vocCold} V, remaining below the ${limit} V inverter limit.`;
+      let explanation = t(
+        `At ${cfg.minAmbientTempC}°C, temperature-corrected Voc is ${vocCold} V, remaining below the ${limit} V inverter limit.`,
+        `عند درجة حرارة ${ltr(`${cfg.minAmbientTempC}°C`)}, يبلغ الجهد المصحح حرارياً ${ltr(`${vocCold} V`)} ويبقى دون الحد الأقصى للعاكس (${ltr(`${limit} V`)}).`,
+      );
       if (vocCold > limit) {
         status = 'FAIL';
-        explanation = `At ${cfg.minAmbientTempC}°C, temperature-corrected Voc (${vocCold} V) exceeds inverter Vdc_max (${limit} V) by ${(vocCold - limit).toFixed(2)} V.`;
+        explanation = t(
+          `At ${cfg.minAmbientTempC}°C, temperature-corrected Voc (${vocCold} V) exceeds inverter Vdc_max (${limit} V) by ${(vocCold - limit).toFixed(2)} V.`,
+          `عند درجة حرارة ${ltr(`${cfg.minAmbientTempC}°C`)}, يتجاوز الجهد المصحح حرارياً (${ltr(`${vocCold} V`)}) أقصى جهد دخل للعاكس (${ltr(`${limit} V`)}) بمقدار ${ltr(`${(vocCold - limit).toFixed(2)} V`)}.`,
+        );
       } else if (vocCold > limit * 0.95) {
         status = 'WARNING';
-        explanation = `At ${cfg.minAmbientTempC}°C, temperature-corrected Voc (${vocCold} V) exceeds 95% of inverter Vdc_max (${limit} V).`;
+        explanation = t(
+          `At ${cfg.minAmbientTempC}°C, temperature-corrected Voc (${vocCold} V) exceeds 95% of inverter Vdc_max (${limit} V).`,
+          `عند درجة حرارة ${ltr(`${cfg.minAmbientTempC}°C`)}, يتجاوز الجهد المصحح حرارياً (${ltr(`${vocCold} V`)}) نسبة ${ltr('95%')} من حد العاكس (${ltr(`${limit} V`)}).`,
+        );
       }
       checks.push(
         buildCheckResult({
           id: 'check-thermal-voc',
-          title: 'Temperature-Corrected Open-Circuit Voltage (Cold Weather)',
+          title: t(
+            'Temperature-Corrected Open-Circuit Voltage (Cold Weather)',
+            'جهد الدائرة المفتوحة المصحح حرارياً (الطقس البارد)',
+          ),
           category: 'THERMAL_VOC',
           status,
           formula: 'Voc_cold = Ns × Voc_mod × [1 + (β_Voc / 100) × (T_min − 25)]',
           inputs,
           calculatedValue: vocCold,
           calculatedUnit: 'V',
-          limitLabel: 'Inverter Max PV Input Voltage',
-          limitValue: `≤ ${limit} V`,
+          limitLabel: t('Inverter Max PV Input Voltage', 'أقصى جهد دخل للعاكس'),
+          limitValue: isAr ? ltr(`≤ ${limit} V`) : `≤ ${limit} V`,
           missingInputs: [],
           explanation,
-        }),
+        }, lang),
       );
     }
   }
@@ -981,28 +1168,30 @@ export function runEngineeringValidation(project: SolarProject): EngineeringChec
   // 3. MPPT Operating Voltage Range
   {
     const inputs: EngineeringInputTrace[] = [
-      makeConfigTrace('Modules in Series', 'Ns', cfg.modulesPerString, 'modules', arrTag),
-      makeEquipmentTrace('Module Vmp (STC)', 'Vmp_mod', pv?.vmpV ?? null, 'V', pv, 'vmpV', isDemo),
+      makeConfigTrace(t('Modules in Series', 'عدد الألواح على التوالي'), 'Ns', cfg.modulesPerString, modUnit, arrTag),
+      makeEquipmentTrace(t('Module Vmp (STC)', 'جهد القدرة القصوى للوح (Vmp)'), 'Vmp_mod', pv?.vmpV ?? null, 'V', pv, 'vmpV', isDemo, lang),
       makeEquipmentTrace(
-        'Inverter MPPT Min',
+        t('Inverter MPPT Min', 'أدنى جهد MPPT للعاكس'),
         'Vmppt_min',
         inverter?.mpptMinV ?? null,
         'V',
         inverter,
         'mpptMinV',
         isDemo,
+        lang,
       ),
       makeEquipmentTrace(
-        'Inverter MPPT Max',
+        t('Inverter MPPT Max', 'أقصى جهد MPPT للعاكس'),
         'Vmppt_max',
         inverter?.mpptMaxV ?? null,
         'V',
         inverter,
         'mpptMaxV',
         isDemo,
+        lang,
       ),
     ];
-    const missing = inputs.filter((i) => i.value === null).map((i) => `${i.label} (${i.symbol})`);
+    const missing = inputs.filter((i) => i.value === null).map((i) => `${i.label} (${ltr(i.symbol)})`);
 
     if (
       missing.length > 0 ||
@@ -1019,60 +1208,80 @@ export function runEngineeringValidation(project: SolarProject): EngineeringChec
       checks.push(
         buildCheckResult({
           id: 'check-mppt-window',
-          title: 'String Operating Voltage vs. MPPT Tracking Window',
+          title: t(
+            'String Operating Voltage vs. MPPT Tracking Window',
+            'جهد تشغيل السلسلة مقابل نطاق تتبع MPPT',
+          ),
           category: 'MPPT',
           status: 'INSUFFICIENT DATA',
           formula: 'Vmp_string = Ns × Vmp_mod ∈ [Vmppt_min, Vmppt_max]',
           inputs,
           calculatedValue: null,
           calculatedUnit: 'V',
-          limitLabel: 'MPPT Voltage Window',
+          limitLabel: t('MPPT Voltage Window', 'نطاق جهد MPPT'),
           limitValue:
             inverter?.mpptMinV !== null &&
             inverter?.mpptMinV !== undefined &&
             inverter?.mpptMaxV !== null &&
             inverter?.mpptMaxV !== undefined
-              ? `${inverter.mpptMinV} – ${inverter.mpptMaxV} V`
-              : 'Missing',
+              ? (isAr ? ltr(`${inverter.mpptMinV} – ${inverter.mpptMaxV} V`) : `${inverter.mpptMinV} – ${inverter.mpptMaxV} V`)
+              : missingTxt,
           missingInputs:
             missing.length > 0
               ? missing
-              : ['Valid MPPT window bounds (Vmppt_max > Vmppt_min) and positive Ns/Vmp'],
-          explanation:
+              : [t('Valid MPPT window bounds (Vmppt_max > Vmppt_min) and positive Ns/Vmp', 'حدود نطاق MPPT صالحة وقيم موجبة لكل من Ns و Vmp')],
+          explanation: t(
             'Requires series module count, module Vmp, and valid inverter MPPT min/max bounds.',
-        }),
+            'يتطلب عدد الألواح على التوالي وجهد Vmp للوح وحدود نطاق MPPT الدنيا والقصوى للعاكس.',
+          ),
+        }, lang),
       );
     } else {
       const vmpString = Number((cfg.modulesPerString * pv.vmpV).toFixed(2));
       const { mpptMinV, mpptMaxV } = inverter;
       const span = mpptMaxV - mpptMinV;
       let status: EngineeringCheckResult['status'] = 'PASS';
-      let explanation = `String Vmp (${vmpString} V) sits comfortably inside the inverter MPPT operating window (${mpptMinV}–${mpptMaxV} V).`;
+      let explanation = t(
+        `String Vmp (${vmpString} V) sits comfortably inside the inverter MPPT operating window (${mpptMinV}–${mpptMaxV} V).`,
+        `جهد التشغيل للسلسلة (${ltr(`${vmpString} V`)}) يقع بأمان داخل نطاق عمل MPPT للعاكس (${ltr(`${mpptMinV}–${mpptMaxV} V`)}).`,
+      );
       if (vmpString < mpptMinV || vmpString > mpptMaxV) {
         status = 'FAIL';
         explanation =
           vmpString < mpptMinV
-            ? `String Vmp (${vmpString} V) is below the minimum MPPT threshold (${mpptMinV} V).`
-            : `String Vmp (${vmpString} V) exceeds the maximum MPPT ceiling (${mpptMaxV} V).`;
+            ? t(
+                `String Vmp (${vmpString} V) is below the minimum MPPT threshold (${mpptMinV} V).`,
+                `جهد التشغيل للسلسلة (${ltr(`${vmpString} V`)}) أقل من الحد الأدنى لتتبع MPPT (${ltr(`${mpptMinV} V`)}).`,
+              )
+            : t(
+                `String Vmp (${vmpString} V) exceeds the maximum MPPT ceiling (${mpptMaxV} V).`,
+                `جهد التشغيل للسلسلة (${ltr(`${vmpString} V`)}) يتجاوز الحد الأقصى لنطاق MPPT (${ltr(`${mpptMaxV} V`)}).`,
+              );
       } else if (vmpString < mpptMinV + span * 0.08 || vmpString > mpptMaxV - span * 0.08) {
         status = 'WARNING';
-        explanation = `String Vmp (${vmpString} V) is within 8% of the MPPT window edge (${mpptMinV}–${mpptMaxV} V); high cell temperatures may reduce tracking efficiency.`;
+        explanation = t(
+          `String Vmp (${vmpString} V) is within 8% of the MPPT window edge (${mpptMinV}–${mpptMaxV} V); high cell temperatures may reduce tracking efficiency.`,
+          `جهد التشغيل للسلسلة (${ltr(`${vmpString} V`)}) قريب بنسبة 8% من حافة نطاق MPPT (${ltr(`${mpptMinV}–${mpptMaxV} V`)})؛ قد تقلل حرارة الخلايا العالية كفاءة التتبع.`,
+        );
       }
       checks.push(
         buildCheckResult({
           id: 'check-mppt-window',
-          title: 'String Operating Voltage vs. MPPT Tracking Window',
+          title: t(
+            'String Operating Voltage vs. MPPT Tracking Window',
+            'جهد تشغيل السلسلة مقابل نطاق تتبع MPPT',
+          ),
           category: 'MPPT',
           status,
           formula: 'Vmp_string = Ns × Vmp_mod',
           inputs,
           calculatedValue: vmpString,
           calculatedUnit: 'V',
-          limitLabel: 'MPPT Operating Window',
-          limitValue: `${mpptMinV} – ${mpptMaxV} V`,
+          limitLabel: t('MPPT Operating Window', 'نطاق تشغيل MPPT'),
+          limitValue: isAr ? ltr(`${mpptMinV} – ${mpptMaxV} V`) : `${mpptMinV} – ${mpptMaxV} V`,
           missingInputs: [],
           explanation,
-        }),
+        }, lang),
       );
     }
   }
@@ -1081,19 +1290,20 @@ export function runEngineeringValidation(project: SolarProject): EngineeringChec
   {
     const maxOpCurrent = inverter?.maxPvOperatingCurrentA ?? null;
     const inputs: EngineeringInputTrace[] = [
-      makeConfigTrace('Parallel Strings', 'Np', cfg.parallelStrings, 'strings', arrTag),
-      makeEquipmentTrace('Module Imp (STC)', 'Imp_mod', pv?.impA ?? null, 'A', pv, 'impA', isDemo),
+      makeConfigTrace(t('Parallel Strings', 'السلاسل على التوازي'), 'Np', cfg.parallelStrings, strUnit, arrTag),
+      makeEquipmentTrace(t('Module Imp (STC)', 'تيار القدرة القصوى للوح (Imp)'), 'Imp_mod', pv?.impA ?? null, 'A', pv, 'impA', isDemo, lang),
       makeEquipmentTrace(
-        'Inverter Max PV Operating Current',
+        t('Inverter Max PV Operating Current', 'أقصى تيار تشغيل PV للعاكس'),
         'Ipv_op_max',
         maxOpCurrent,
         'A',
         inverter,
         'maxPvOperatingCurrentA',
         isDemo,
+        lang,
       ),
     ];
-    const missing = inputs.filter((i) => i.value === null).map((i) => `${i.label} (${i.symbol})`);
+    const missing = inputs.filter((i) => i.value === null).map((i) => `${i.label} (${ltr(i.symbol)})`);
 
     if (
       missing.length > 0 ||
@@ -1107,49 +1317,70 @@ export function runEngineeringValidation(project: SolarProject): EngineeringChec
       checks.push(
         buildCheckResult({
           id: 'check-pv-operating-current',
-          title: 'Parallel Array Operating Current (Imp) vs. Inverter Max PV Operating Current',
+          title: t(
+            'Parallel Array Operating Current (Imp) vs. Inverter Max PV Operating Current',
+            'تيار التشغيل للمصفوفة المتوازية (Imp) مقابل أقصى تيار تشغيل PV للعاكس',
+          ),
           category: 'CURRENT',
           status: 'INSUFFICIENT DATA',
           formula: 'I_array_mp = Np × Imp_mod ≤ Ipv_op_max',
           inputs,
           calculatedValue: null,
           calculatedUnit: 'A',
-          limitLabel: 'Inverter Max PV Operating Current',
-          limitValue: maxOpCurrent !== null ? `≤ ${maxOpCurrent} A` : 'Missing',
+          limitLabel: t('Inverter Max PV Operating Current', 'أقصى تيار تشغيل PV للعاكس'),
+          limitValue: maxOpCurrent !== null
+            ? (isAr ? ltr(`≤ ${maxOpCurrent} A`) : `≤ ${maxOpCurrent} A`)
+            : missingTxt,
           missingInputs:
-            missing.length > 0 ? missing : ['Valid positive Np, Imp_mod, and Ipv_op_max'],
-          explanation:
+            missing.length > 0
+              ? missing
+              : [t('Valid positive Np, Imp_mod, and Ipv_op_max', 'قيم موجبة صالحة لكل من Np و Imp_mod و Ipv_op_max')],
+          explanation: t(
             'Requires parallel string count, module Imp, and the inverter datasheet max PV operating input current limit (Ipv_op_max). Short-circuit current limits cannot be substituted.',
-        }),
+            'يتطلب عدد السلاسل المتوازية وتيار Imp للوح وحد أقصى تيار تشغيل للعاكس (Ipv_op_max) من النشرة الفنية. لا يجوز التعويض بحد تيار القصر.',
+          ),
+        }, lang),
       );
     } else {
       const iArrayMp = Number((cfg.parallelStrings * pv.impA).toFixed(2));
       let status: EngineeringCheckResult['status'] = 'PASS';
-      let explanation = `Combined parallel operating current (${iArrayMp} A across ${cfg.parallelStrings} string(s)) is within the inverter ${maxOpCurrent} A operating input limit.`;
+      let explanation = t(
+        `Combined parallel operating current (${iArrayMp} A across ${cfg.parallelStrings} string(s)) is within the inverter ${maxOpCurrent} A operating input limit.`,
+        `إجمالي تيار التشغيل المتوازي (${ltr(`${iArrayMp} A`)} عبر ${ltr(cfg.parallelStrings)} سلسلة/سلاسل) يقع ضمن حد تيار التشغيل للعاكس (${ltr(`${maxOpCurrent} A`)}).`,
+      );
 
       if (iArrayMp > maxOpCurrent) {
         status = 'FAIL';
-        explanation = `Combined parallel operating current (${iArrayMp} A across ${cfg.parallelStrings} string(s)) exceeds inverter max PV operating current (${maxOpCurrent} A) by ${(iArrayMp - maxOpCurrent).toFixed(2)} A.`;
+        explanation = t(
+          `Combined parallel operating current (${iArrayMp} A across ${cfg.parallelStrings} string(s)) exceeds inverter max PV operating current (${maxOpCurrent} A) by ${(iArrayMp - maxOpCurrent).toFixed(2)} A.`,
+          `إجمالي تيار التشغيل المتوازي (${ltr(`${iArrayMp} A`)} عبر ${ltr(cfg.parallelStrings)} سلسلة/سلاسل) يتجاوز حد تيار التشغيل للعاكس (${ltr(`${maxOpCurrent} A`)}) بمقدار ${ltr(`${(iArrayMp - maxOpCurrent).toFixed(2)} A`)}.`,
+        );
       } else if (iArrayMp > maxOpCurrent * 0.9) {
         status = 'WARNING';
-        explanation = `Combined parallel operating current (${iArrayMp} A) exceeds 90% of the inverter ${maxOpCurrent} A operating current rating.`;
+        explanation = t(
+          `Combined parallel operating current (${iArrayMp} A) exceeds 90% of the inverter ${maxOpCurrent} A operating current rating.`,
+          `إجمالي تيار التشغيل المتوازي (${ltr(`${iArrayMp} A`)}) يتجاوز ${ltr('90%')} من تصنيف تيار التشغيل للعاكس (${ltr(`${maxOpCurrent} A`)}).`,
+        );
       }
 
       checks.push(
         buildCheckResult({
           id: 'check-pv-operating-current',
-          title: 'Parallel Array Operating Current (Imp) vs. Inverter Max PV Operating Current',
+          title: t(
+            'Parallel Array Operating Current (Imp) vs. Inverter Max PV Operating Current',
+            'تيار التشغيل للمصفوفة المتوازية (Imp) مقابل أقصى تيار تشغيل PV للعاكس',
+          ),
           category: 'CURRENT',
           status,
           formula: 'I_array_mp = Np × Imp_mod',
           inputs,
           calculatedValue: iArrayMp,
           calculatedUnit: 'A',
-          limitLabel: 'Inverter Max PV Operating Current',
-          limitValue: `≤ ${maxOpCurrent} A`,
+          limitLabel: t('Inverter Max PV Operating Current', 'أقصى تيار تشغيل PV للعاكس'),
+          limitValue: isAr ? ltr(`≤ ${maxOpCurrent} A`) : `≤ ${maxOpCurrent} A`,
           missingInputs: [],
           explanation,
-        }),
+        }, lang),
       );
     }
   }
@@ -1158,19 +1389,20 @@ export function runEngineeringValidation(project: SolarProject): EngineeringChec
   {
     const maxScCurrent = inverter?.maxPvShortCircuitCurrentA ?? null;
     const inputs: EngineeringInputTrace[] = [
-      makeConfigTrace('Parallel Strings', 'Np', cfg.parallelStrings, 'strings', arrTag),
-      makeEquipmentTrace('Module Isc (STC)', 'Isc_mod', pv?.iscA ?? null, 'A', pv, 'iscA', isDemo),
+      makeConfigTrace(t('Parallel Strings', 'السلاسل على التوازي'), 'Np', cfg.parallelStrings, strUnit, arrTag),
+      makeEquipmentTrace(t('Module Isc (STC)', 'تيار القصر للوح (Isc)'), 'Isc_mod', pv?.iscA ?? null, 'A', pv, 'iscA', isDemo, lang),
       makeEquipmentTrace(
-        'Inverter Max PV Short-Circuit Current',
+        t('Inverter Max PV Short-Circuit Current', 'أقصى تيار قصر PV للعاكس'),
         'Ipv_sc_max',
         maxScCurrent,
         'A',
         inverter,
         'maxPvShortCircuitCurrentA',
         isDemo,
+        lang,
       ),
     ];
-    const missing = inputs.filter((i) => i.value === null).map((i) => `${i.label} (${i.symbol})`);
+    const missing = inputs.filter((i) => i.value === null).map((i) => `${i.label} (${ltr(i.symbol)})`);
 
     if (
       missing.length > 0 ||
@@ -1184,49 +1416,70 @@ export function runEngineeringValidation(project: SolarProject): EngineeringChec
       checks.push(
         buildCheckResult({
           id: 'check-pv-shortcircuit-current',
-          title: 'Parallel Array Short-Circuit Current (Isc) vs. Inverter Max PV Short-Circuit Current',
+          title: t(
+            'Parallel Array Short-Circuit Current (Isc) vs. Inverter Max PV Short-Circuit Current',
+            'تيار القصر للمصفوفة المتوازية (Isc) مقابل أقصى تيار قصر PV للعاكس',
+          ),
           category: 'CURRENT',
           status: 'INSUFFICIENT DATA',
           formula: 'I_array_sc = Np × Isc_mod ≤ Ipv_sc_max',
           inputs,
           calculatedValue: null,
           calculatedUnit: 'A',
-          limitLabel: 'Inverter Max PV Short-Circuit Current',
-          limitValue: maxScCurrent !== null ? `≤ ${maxScCurrent} A` : 'Missing',
+          limitLabel: t('Inverter Max PV Short-Circuit Current', 'أقصى تيار قصر PV للعاكس'),
+          limitValue: maxScCurrent !== null
+            ? (isAr ? ltr(`≤ ${maxScCurrent} A`) : `≤ ${maxScCurrent} A`)
+            : missingTxt,
           missingInputs:
-            missing.length > 0 ? missing : ['Valid positive Np, Isc_mod, and Ipv_sc_max'],
-          explanation:
+            missing.length > 0
+              ? missing
+              : [t('Valid positive Np, Isc_mod, and Ipv_sc_max', 'قيم موجبة صالحة لكل من Np و Isc_mod و Ipv_sc_max')],
+          explanation: t(
             'Requires parallel string count, module Isc, and the inverter datasheet max PV short-circuit current limit (Ipv_sc_max). Operating current limits cannot be substituted.',
-        }),
+            'يتطلب عدد السلاسل المتوازية وتيار Isc للوح وحد أقصى تيار قصر للعاكس (Ipv_sc_max) من النشرة الفنية. لا يجوز التعويض بحد تيار التشغيل.',
+          ),
+        }, lang),
       );
     } else {
       const iArraySc = Number((cfg.parallelStrings * pv.iscA).toFixed(2));
       let status: EngineeringCheckResult['status'] = 'PASS';
-      let explanation = `Combined parallel short-circuit current (${iArraySc} A across ${cfg.parallelStrings} string(s)) is within the inverter ${maxScCurrent} A short-circuit input limit.`;
+      let explanation = t(
+        `Combined parallel short-circuit current (${iArraySc} A across ${cfg.parallelStrings} string(s)) is within the inverter ${maxScCurrent} A short-circuit input limit.`,
+        `إجمالي تيار القصر المتوازي (${ltr(`${iArraySc} A`)} عبر ${ltr(cfg.parallelStrings)} سلسلة/سلاسل) يقع ضمن حد تيار القصر للعاكس (${ltr(`${maxScCurrent} A`)}).`,
+      );
 
       if (iArraySc > maxScCurrent) {
         status = 'FAIL';
-        explanation = `Combined parallel short-circuit current (${iArraySc} A across ${cfg.parallelStrings} string(s)) exceeds inverter max PV short-circuit current (${maxScCurrent} A) by ${(iArraySc - maxScCurrent).toFixed(2)} A.`;
+        explanation = t(
+          `Combined parallel short-circuit current (${iArraySc} A across ${cfg.parallelStrings} string(s)) exceeds inverter max PV short-circuit current (${maxScCurrent} A) by ${(iArraySc - maxScCurrent).toFixed(2)} A.`,
+          `إجمالي تيار القصر المتوازي (${ltr(`${iArraySc} A`)} عبر ${ltr(cfg.parallelStrings)} سلسلة/سلاسل) يتجاوز حد تيار القصر للعاكس (${ltr(`${maxScCurrent} A`)}) بمقدار ${ltr(`${(iArraySc - maxScCurrent).toFixed(2)} A`)}.`,
+        );
       } else if (iArraySc > maxScCurrent * 0.9) {
         status = 'WARNING';
-        explanation = `Combined parallel short-circuit current (${iArraySc} A) exceeds 90% of the inverter ${maxScCurrent} A short-circuit rating, leaving minimal irradiance surge margin.`;
+        explanation = t(
+          `Combined parallel short-circuit current (${iArraySc} A) exceeds 90% of the inverter ${maxScCurrent} A short-circuit rating, leaving minimal irradiance surge margin.`,
+          `إجمالي تيار القصر المتوازي (${ltr(`${iArraySc} A`)}) يتجاوز ${ltr('90%')} من تصنيف تيار القصر للعاكس (${ltr(`${maxScCurrent} A`)}) مما يترك هامشاً ضئيلاً لارتفاع الإشعاع.`,
+        );
       }
 
       checks.push(
         buildCheckResult({
           id: 'check-pv-shortcircuit-current',
-          title: 'Parallel Array Short-Circuit Current (Isc) vs. Inverter Max PV Short-Circuit Current',
+          title: t(
+            'Parallel Array Short-Circuit Current (Isc) vs. Inverter Max PV Short-Circuit Current',
+            'تيار القصر للمصفوفة المتوازية (Isc) مقابل أقصى تيار قصر PV للعاكس',
+          ),
           category: 'CURRENT',
           status,
           formula: 'I_array_sc = Np × Isc_mod',
           inputs,
           calculatedValue: iArraySc,
           calculatedUnit: 'A',
-          limitLabel: 'Inverter Max PV Short-Circuit Current',
-          limitValue: `≤ ${maxScCurrent} A`,
+          limitLabel: t('Inverter Max PV Short-Circuit Current', 'أقصى تيار قصر PV للعاكس'),
+          limitValue: isAr ? ltr(`≤ ${maxScCurrent} A`) : `≤ ${maxScCurrent} A`,
           missingInputs: [],
           explanation,
-        }),
+        }, lang),
       );
     }
   }
@@ -1235,34 +1488,37 @@ export function runEngineeringValidation(project: SolarProject): EngineeringChec
   {
     const inputs: EngineeringInputTrace[] = [
       makeEquipmentTrace(
-        'Installed Module Count',
+        t('Installed Module Count', 'عدد الألواح المركبة'),
         'N_pv',
         pv?.quantity ?? null,
-        'modules',
+        modUnit,
         pv,
         'quantity',
         isDemo,
+        lang,
       ),
       makeEquipmentTrace(
-        'Module Rated Power',
+        t('Module Rated Power', 'القدرة الاسمية للوح'),
         'P_mod',
         pv?.ratedPowerW ?? null,
         'W',
         pv,
         'ratedPowerW',
         isDemo,
+        lang,
       ),
       makeEquipmentTrace(
-        'Inverter Rated AC Power',
+        t('Inverter Rated AC Power', 'القدرة المترددة الاسمية للعاكس'),
         'P_inv',
         inverter?.ratedPowerW ?? null,
         'W',
         inverter,
         'ratedPowerW',
         isDemo,
+        lang,
       ),
     ];
-    const missing = inputs.filter((i) => i.value === null).map((i) => `${i.label} (${i.symbol})`);
+    const missing = inputs.filter((i) => i.value === null).map((i) => `${i.label} (${ltr(i.symbol)})`);
 
     if (
       missing.length > 0 ||
@@ -1276,20 +1532,24 @@ export function runEngineeringValidation(project: SolarProject): EngineeringChec
       checks.push(
         buildCheckResult({
           id: 'check-dc-ac-ratio',
-          title: 'Array DC-to-Inverter AC Sizing Ratio',
+          title: t('Array DC-to-Inverter AC Sizing Ratio', 'نسبة تحجيم قدرة المصفوفة DC إلى العاكس AC'),
           category: 'POWER_RATIO',
           status: 'INSUFFICIENT DATA',
           formula: 'DC/AC Ratio = (N_pv × P_mod) / P_inv',
           inputs,
           calculatedValue: null,
-          calculatedUnit: 'ratio',
-          limitLabel: 'Recommended Sizing Window',
-          limitValue: '0.75 – 1.35 (Max 1.50)',
+          calculatedUnit: t('ratio', 'نسبة'),
+          limitLabel: t('Recommended Sizing Window', 'نطاق التحجيم الموصى به'),
+          limitValue: isAr ? ltr('0.75 – 1.35 (Max 1.50)') : '0.75 – 1.35 (Max 1.50)',
           missingInputs:
-            missing.length > 0 ? missing : ['Valid positive N_pv, P_mod, and P_inv'],
-          explanation:
+            missing.length > 0
+              ? missing
+              : [t('Valid positive N_pv, P_mod, and P_inv', 'قيم موجبة صالحة لكل من N_pv و P_mod و P_inv')],
+          explanation: t(
             'Requires installed module count, module wattage, and inverter rated AC power.',
-        }),
+            'يتطلب عدد الألواح المركبة وقدرة اللوح بالواط والقدرة الاسمية للعاكس.',
+          ),
+        }, lang),
       );
     } else {
       const totalDcW = pv.quantity * pv.ratedPowerW;
@@ -1300,15 +1560,24 @@ export function runEngineeringValidation(project: SolarProject): EngineeringChec
           : null;
       const countMismatchNote =
         configuredTotal !== null && configuredTotal !== pv.quantity
-          ? ` Note: Array layout (${cfg.modulesPerString}S × ${cfg.parallelStrings}P = ${configuredTotal}) differs from installed module count (${pv.quantity}).`
+          ? t(
+              ` Note: Array layout (${cfg.modulesPerString}S × ${cfg.parallelStrings}P = ${configuredTotal}) differs from installed module count (${pv.quantity}).`,
+              ` ملاحظة: توزيع المصفوفة (${ltr(`${cfg.modulesPerString}S × ${cfg.parallelStrings}P = ${configuredTotal}`)}) يختلف عن عدد الألواح المركبة (${ltr(pv.quantity)}).`,
+            )
           : '';
 
       let status: EngineeringCheckResult['status'] = 'PASS';
-      let explanation = `Total installed PV DC power (${(totalDcW / 1000).toFixed(2)} kWp) vs. inverter AC rating (${(inverter.ratedPowerW / 1000).toFixed(2)} kW) gives a DC/AC ratio of ${ratio}.${countMismatchNote}`;
+      let explanation = t(
+        `Total installed PV DC power (${(totalDcW / 1000).toFixed(2)} kWp) vs. inverter AC rating (${(inverter.ratedPowerW / 1000).toFixed(2)} kW) gives a DC/AC ratio of ${ratio}.${countMismatchNote}`,
+        `إجمالي قدرة الألواح المركبة (${ltr(`${(totalDcW / 1000).toFixed(2)} kWp`)}) مقابل قدرة العاكس (${ltr(`${(inverter.ratedPowerW / 1000).toFixed(2)} kW`)}) يعطي نسبة ${ltr(`DC/AC = ${ratio}`)}.${countMismatchNote}`,
+      );
 
       if (ratio > 1.5) {
         status = 'FAIL';
-        explanation = `DC/AC ratio (${ratio}) exceeds 1.50 upper limit (${totalDcW} W DC on ${inverter.ratedPowerW} W inverter).${countMismatchNote}`;
+        explanation = t(
+          `DC/AC ratio (${ratio}) exceeds 1.50 upper limit (${totalDcW} W DC on ${inverter.ratedPowerW} W inverter).${countMismatchNote}`,
+          `نسبة ${ltr(`DC/AC (${ratio})`)} تتجاوز الحد الأقصى ${ltr('1.50')} (${ltr(`${totalDcW} W`)} على عاكس ${ltr(`${inverter.ratedPowerW} W`)}).${countMismatchNote}`,
+        );
       } else if (
         ratio > 1.35 ||
         ratio < 0.75 ||
@@ -1317,25 +1586,31 @@ export function runEngineeringValidation(project: SolarProject): EngineeringChec
         status = 'WARNING';
         explanation =
           ratio > 1.35 || ratio < 0.75
-            ? `DC/AC ratio (${ratio}) falls outside the standard 0.75–1.35 operating band.${countMismatchNote}`
-            : `DC/AC ratio is ${ratio}, however array wiring layout count (${configuredTotal}) does not match installed module quantity (${pv.quantity}).`;
+            ? t(
+                `DC/AC ratio (${ratio}) falls outside the standard 0.75–1.35 operating band.${countMismatchNote}`,
+                `نسبة ${ltr(`DC/AC (${ratio})`)} تقع خارج النطاق التشغيلي القياسي (${ltr('0.75–1.35')}).${countMismatchNote}`,
+              )
+            : t(
+                `DC/AC ratio is ${ratio}, however array wiring layout count (${configuredTotal}) does not match installed module quantity (${pv.quantity}).`,
+                `نسبة ${ltr('DC/AC')} هي ${ltr(ratio)}, إلا أن عدد الألواح في التوصيل (${ltr(configuredTotal ?? '')}) لا يطابق عدد الألواح المركبة (${ltr(pv.quantity)}).`,
+              );
       }
 
       checks.push(
         buildCheckResult({
           id: 'check-dc-ac-ratio',
-          title: 'Array DC-to-Inverter AC Sizing Ratio',
+          title: t('Array DC-to-Inverter AC Sizing Ratio', 'نسبة تحجيم قدرة المصفوفة DC إلى العاكس AC'),
           category: 'POWER_RATIO',
           status,
           formula: 'DC/AC Ratio = (N_pv × P_mod) / P_inv',
           inputs,
           calculatedValue: ratio,
           calculatedUnit: 'DC/AC',
-          limitLabel: 'Engineering Sizing Range',
-          limitValue: '0.75 – 1.35 (Fail > 1.50)',
+          limitLabel: t('Engineering Sizing Range', 'نطاق التحجيم الهندسي'),
+          limitValue: isAr ? `${ltr('0.75 – 1.35')} (فشل ${ltr('> 1.50')})` : '0.75 – 1.35 (Fail > 1.50)',
           missingInputs: [],
           explanation,
-        }),
+        }, lang),
       );
     }
   }
@@ -1349,46 +1624,50 @@ export function runEngineeringValidation(project: SolarProject): EngineeringChec
   if (batteryRelevant) {
     const inputs: EngineeringInputTrace[] = [
       makeEquipmentTrace(
-        'Battery Nominal Voltage',
+        t('Battery Nominal Voltage', 'الجهد الاسمي للبطارية'),
         'V_batt',
         battery?.nominalVoltageV ?? null,
         'V',
         battery,
         'nominalVoltageV',
         isDemo,
+        lang,
       ),
       makeEquipmentTrace(
-        'Inverter Battery Bus Voltage',
+        t('Inverter Battery Bus Voltage', 'جهد ناقل البطارية بالعاكس'),
         'V_inv_dc',
         inverter?.nominalVoltageV ?? null,
         'V',
         inverter,
         'nominalVoltageV',
         isDemo,
+        lang,
       ),
       makeEquipmentTrace(
-        'Inverter Battery Min V',
+        t('Inverter Battery Min V', 'أدنى جهد بطارية بالعاكس'),
         'V_batt_min',
         inverter?.minBatteryVoltageV ?? null,
         'V',
         inverter,
         'minBatteryVoltageV',
         isDemo,
+        lang,
       ),
       makeEquipmentTrace(
-        'Inverter Battery Max V',
+        t('Inverter Battery Max V', 'أقصى جهد بطارية بالعاكس'),
         'V_batt_max',
         inverter?.maxBatteryVoltageV ?? null,
         'V',
         inverter,
         'maxBatteryVoltageV',
         isDemo,
+        lang,
       ),
     ];
 
     const missing: string[] = [];
     if (battery?.nominalVoltageV === null || battery?.nominalVoltageV === undefined) {
-      missing.push('Battery Nominal Voltage (V_batt)');
+      missing.push(t('Battery Nominal Voltage (V_batt)', `الجهد الاسمي للبطارية (${ltr('V_batt')})`));
     }
     const hasInverterRange =
       inverter?.minBatteryVoltageV !== null &&
@@ -1399,30 +1678,47 @@ export function runEngineeringValidation(project: SolarProject): EngineeringChec
       inverter?.nominalVoltageV !== null && inverter?.nominalVoltageV !== undefined;
 
     if (!hasInverterRange && !hasInverterNom) {
-      missing.push('Inverter Battery Bus Voltage or Window (V_inv_dc)');
+      missing.push(
+        t(
+          'Inverter Battery Bus Voltage or Window (V_inv_dc)',
+          `جهد أو نطاق ناقل البطارية بالعاكس (${ltr('V_inv_dc')})`,
+        ),
+      );
     }
 
     if (missing.length > 0 || !battery?.nominalVoltageV || battery.nominalVoltageV <= 0) {
       checks.push(
         buildCheckResult({
           id: 'check-battery-voltage',
-          title: 'Battery Bank & Inverter DC Bus Compatibility',
+          title: t(
+            'Battery Bank & Inverter DC Bus Compatibility',
+            'توافق جهد بنك البطاريات مع ناقل العاكس DC',
+          ),
           category: 'BATTERY',
           status: 'INSUFFICIENT DATA',
           formula: 'V_batt_min ≤ V_batt ≤ V_batt_max (or V_batt = V_inv_dc)',
           inputs,
           calculatedValue: null,
           calculatedUnit: 'V',
-          limitLabel: 'Inverter Battery Voltage Rating',
+          limitLabel: t('Inverter Battery Voltage Rating', 'تصنيف جهد البطارية للعاكس'),
           limitValue: hasInverterRange
-            ? `${inverter!.minBatteryVoltageV} – ${inverter!.maxBatteryVoltageV} V`
+            ? (isAr
+                ? ltr(`${inverter!.minBatteryVoltageV} – ${inverter!.maxBatteryVoltageV} V`)
+                : `${inverter!.minBatteryVoltageV} – ${inverter!.maxBatteryVoltageV} V`)
             : hasInverterNom
-              ? `${inverter!.nominalVoltageV} V nominal`
-              : 'Missing',
-          missingInputs: missing.length > 0 ? missing : ['Valid positive Battery Nominal Voltage'],
-          explanation:
+              ? (isAr
+                  ? `${ltr(`${inverter!.nominalVoltageV} V`)} اسمي`
+                  : `${inverter!.nominalVoltageV} V nominal`)
+              : missingTxt,
+          missingInputs:
+            missing.length > 0
+              ? missing
+              : [t('Valid positive Battery Nominal Voltage', 'قيمة موجبة صالحة للجهد الاسمي للبطارية')],
+          explanation: t(
             'Requires verified battery nominal voltage and inverter DC battery bus specification.',
-        }),
+            'يتطلب توثيق الجهد الاسمي للبطارية ومواصفة ناقل البطارية في العاكس.',
+          ),
+        }, lang),
       );
     } else {
       const vBatt = battery.nominalVoltageV;
@@ -1430,11 +1726,15 @@ export function runEngineeringValidation(project: SolarProject): EngineeringChec
       let limitText = '';
 
       if (hasInverterRange) {
-        limitText = `${inverter!.minBatteryVoltageV} – ${inverter!.maxBatteryVoltageV} V`;
+        limitText = isAr
+          ? ltr(`${inverter!.minBatteryVoltageV} – ${inverter!.maxBatteryVoltageV} V`)
+          : `${inverter!.minBatteryVoltageV} – ${inverter!.maxBatteryVoltageV} V`;
         compatible =
           vBatt >= inverter!.minBatteryVoltageV! && vBatt <= inverter!.maxBatteryVoltageV!;
       } else {
-        limitText = `${inverter!.nominalVoltageV} V nominal`;
+        limitText = isAr
+          ? `${ltr(`${inverter!.nominalVoltageV} V`)} اسمي`
+          : `${inverter!.nominalVoltageV} V nominal`;
         compatible = Math.abs(vBatt - inverter!.nominalVoltageV!) <= 4;
       }
 
@@ -1445,7 +1745,10 @@ export function runEngineeringValidation(project: SolarProject): EngineeringChec
       checks.push(
         buildCheckResult({
           id: 'check-battery-voltage',
-          title: 'Battery Bank & Inverter DC Bus Compatibility',
+          title: t(
+            'Battery Bank & Inverter DC Bus Compatibility',
+            'توافق جهد بنك البطاريات مع ناقل العاكس DC',
+          ),
           category: 'BATTERY',
           status: compatible ? 'PASS' : 'FAIL',
           formula: hasInverterRange
@@ -1454,13 +1757,19 @@ export function runEngineeringValidation(project: SolarProject): EngineeringChec
           inputs,
           calculatedValue: vBatt,
           calculatedUnit: 'V',
-          limitLabel: 'Inverter Battery Bus Spec',
+          limitLabel: t('Inverter Battery Bus Spec', 'مواصفة ناقل البطارية بالعاكس'),
           limitValue: limitText,
           missingInputs: [],
           explanation: compatible
-            ? `Installed battery bank (${vBatt} V nominal) is compatible with the inverter battery bus specification (${limitText}).`
-            : `Battery bank nominal voltage (${vBatt} V) is incompatible with inverter battery specification (${limitText}).`,
-        }),
+            ? t(
+                `Installed battery bank (${vBatt} V nominal) is compatible with the inverter battery bus specification (${limitText}).`,
+                `بنك البطاريات المركب (${ltr(`${vBatt} V`)}) متوافق مع مواصفة ناقل البطارية في العاكس (${limitText}).`,
+              )
+            : t(
+                `Battery bank nominal voltage (${vBatt} V) is incompatible with inverter battery specification (${limitText}).`,
+                `الجهد الاسمي لبنك البطاريات (${ltr(`${vBatt} V`)}) غير متوافق مع مواصفة البطارية في العاكس (${limitText}).`,
+              ),
+        }, lang),
       );
     }
   }
@@ -1471,6 +1780,7 @@ export function runEngineeringValidation(project: SolarProject): EngineeringChec
 export function computeAuditSummary(
   comparisons: EquipmentComparisonResult[],
   checks: EngineeringCheckResult[],
+  lang: Language = 'en',
 ): AuditSummary {
   const eligibleComparisons = comparisons.filter((c) => c.eligibility === 'ELIGIBLE');
   const unquotedInstalledCategories = comparisons
@@ -1543,7 +1853,9 @@ export function computeAuditSummary(
     overallStatus,
     equipmentMatchPct,
     equipmentMatchFormula:
-      '(Matching Parameters / Total Eligible Compared Parameters) × 100 (excludes unquoted & undocumented categories)',
+      lang === 'ar'
+        ? '(المعايير المتطابقة ÷ إجمالي المعايير المؤهلة) × 100 (يستبعد الفئات غير المسعرة وغير الموثقة)'
+        : '(Matching Parameters / Total Eligible Compared Parameters) × 100 (excludes unquoted & undocumented categories)',
     eligibleCategories: eligibleComparisons.length,
     unquotedInstalledCategories,
     missingInstalledCategories,
@@ -1566,160 +1878,222 @@ export function computeAuditSummary(
   };
 }
 
-const SYMBOL_TO_CANONICAL_PARAM: Record<
-  string,
-  { key: string; parameter: string; categoryLabel: string; missingOn: string }
-> = {
-  Ns: {
-    key: 'array.modulesPerString',
-    parameter: 'Modules in Series per String (Ns)',
-    categoryLabel: 'Array Configuration',
-    missingOn: 'Array Configuration',
-  },
-  Np: {
-    key: 'array.parallelStrings',
-    parameter: 'Parallel Strings (Np)',
-    categoryLabel: 'Array Configuration',
-    missingOn: 'Array Configuration',
-  },
-  T_min: {
-    key: 'array.minAmbientTempC',
-    parameter: 'Minimum Site Ambient Temperature (T_min)',
-    categoryLabel: 'Array Configuration',
-    missingOn: 'Array Configuration',
-  },
-  Voc_mod: {
-    key: 'pv.vocV',
-    parameter: 'PV Module Open-Circuit Voltage (Voc)',
-    categoryLabel: CATEGORY_LABELS.PV_MODULE,
-    missingOn: 'Installed PV Nameplate',
-  },
-  Vmp_mod: {
-    key: 'pv.vmpV',
-    parameter: 'PV Module Max Power Voltage (Vmp)',
-    categoryLabel: CATEGORY_LABELS.PV_MODULE,
-    missingOn: 'Installed PV Nameplate',
-  },
-  Isc_mod: {
-    key: 'pv.iscA',
-    parameter: 'PV Module Short-Circuit Current (Isc)',
-    categoryLabel: CATEGORY_LABELS.PV_MODULE,
-    missingOn: 'Installed PV Nameplate',
-  },
-  Imp_mod: {
-    key: 'pv.impA',
-    parameter: 'PV Module Max Power Current (Imp)',
-    categoryLabel: CATEGORY_LABELS.PV_MODULE,
-    missingOn: 'Installed PV Nameplate',
-  },
-  β_Voc: {
-    key: 'pv.tempCoeffVocPctPerC',
-    parameter: 'PV Module Voc Temperature Coefficient (β_Voc)',
-    categoryLabel: CATEGORY_LABELS.PV_MODULE,
-    missingOn: 'Installed PV Nameplate / Datasheet',
-  },
-  N_pv: {
-    key: 'pv.quantity',
-    parameter: 'Installed PV Module Quantity (N_pv)',
-    categoryLabel: CATEGORY_LABELS.PV_MODULE,
-    missingOn: 'Installed PV Nameplate',
-  },
-  P_mod: {
-    key: 'pv.ratedPowerW',
-    parameter: 'PV Module Rated Power (Pmax)',
-    categoryLabel: CATEGORY_LABELS.PV_MODULE,
-    missingOn: 'Installed PV Nameplate',
-  },
-  Vdc_max: {
-    key: 'inv.maxPvInputVoltageV',
-    parameter: 'Inverter Max PV Input Voltage (Vdc_max)',
-    categoryLabel: CATEGORY_LABELS.INVERTER,
-    missingOn: 'Installed Inverter Nameplate / Datasheet',
-  },
-  Vmppt_min: {
-    key: 'inv.mpptMinV',
-    parameter: 'Inverter MPPT Minimum Voltage (Vmppt_min)',
-    categoryLabel: CATEGORY_LABELS.INVERTER,
-    missingOn: 'Installed Inverter Nameplate / Datasheet',
-  },
-  Vmppt_max: {
-    key: 'inv.mpptMaxV',
-    parameter: 'Inverter MPPT Maximum Voltage (Vmppt_max)',
-    categoryLabel: CATEGORY_LABELS.INVERTER,
-    missingOn: 'Installed Inverter Nameplate / Datasheet',
-  },
-  Ipv_op_max: {
-    key: 'inv.maxPvOperatingCurrentA',
-    parameter: 'Inverter Max PV Operating Current (Ipv_op_max)',
-    categoryLabel: CATEGORY_LABELS.INVERTER,
-    missingOn: 'Installed Inverter Nameplate / Datasheet',
-  },
-  Ipv_sc_max: {
-    key: 'inv.maxPvShortCircuitCurrentA',
-    parameter: 'Inverter Max PV Short-Circuit Current (Ipv_sc_max)',
-    categoryLabel: CATEGORY_LABELS.INVERTER,
-    missingOn: 'Installed Inverter Nameplate / Datasheet',
-  },
-  P_inv: {
-    key: 'inv.ratedPowerW',
-    parameter: 'Inverter Rated AC Power (P_inv)',
-    categoryLabel: CATEGORY_LABELS.INVERTER,
-    missingOn: 'Installed Inverter Nameplate',
-  },
-  V_batt: {
-    key: 'batt.nominalVoltageV',
-    parameter: 'Battery Nominal Voltage (V_batt)',
-    categoryLabel: CATEGORY_LABELS.BATTERY,
-    missingOn: 'Installed Battery Nameplate',
-  },
-  V_inv_dc: {
-    key: 'inv.batteryBusVoltage',
-    parameter: 'Inverter Battery Bus Voltage / Operating Window',
-    categoryLabel: CATEGORY_LABELS.INVERTER,
-    missingOn: 'Installed Inverter Nameplate / Datasheet',
-  },
-};
+function getCanonicalSymbolMeta(
+  symbol: string,
+  lang: Language = 'en',
+): { key: string; parameter: string; categoryLabel: string; missingOn: string } | undefined {
+  const isAr = lang === 'ar';
+  const t = <T>(en: T, ar: T): T => (isAr ? ar : en);
+  const arrLabel = t('Array Configuration', 'تكوين المصفوفة');
+
+  switch (symbol) {
+    case 'Ns':
+      return {
+        key: 'array.modulesPerString',
+        parameter: t('Modules in Series per String (Ns)', `عدد الألواح على التوالي في السلسلة (${ltr('Ns')})`),
+        categoryLabel: arrLabel,
+        missingOn: arrLabel,
+      };
+    case 'Np':
+      return {
+        key: 'array.parallelStrings',
+        parameter: t('Parallel Strings (Np)', `عدد السلاسل على التوازي (${ltr('Np')})`),
+        categoryLabel: arrLabel,
+        missingOn: arrLabel,
+      };
+    case 'T_min':
+      return {
+        key: 'array.minAmbientTempC',
+        parameter: t('Minimum Site Ambient Temperature (T_min)', `أدنى درجة حرارة محيطة بالموقع (${ltr('T_min')})`),
+        categoryLabel: arrLabel,
+        missingOn: arrLabel,
+      };
+    case 'Voc_mod':
+      return {
+        key: 'pv.vocV',
+        parameter: t('PV Module Open-Circuit Voltage (Voc)', `جهد الدائرة المفتوحة للوح (${ltr('Voc')})`),
+        categoryLabel: getCategoryLabel('PV_MODULE', lang),
+        missingOn: t('Installed PV Nameplate', 'لوحة بيانات اللوح الشمسي المركب'),
+      };
+    case 'Vmp_mod':
+      return {
+        key: 'pv.vmpV',
+        parameter: t('PV Module Max Power Voltage (Vmp)', `جهد القدرة القصوى للوح (${ltr('Vmp')})`),
+        categoryLabel: getCategoryLabel('PV_MODULE', lang),
+        missingOn: t('Installed PV Nameplate', 'لوحة بيانات اللوح الشمسي المركب'),
+      };
+    case 'Isc_mod':
+      return {
+        key: 'pv.iscA',
+        parameter: t('PV Module Short-Circuit Current (Isc)', `تيار القصر للوح (${ltr('Isc')})`),
+        categoryLabel: getCategoryLabel('PV_MODULE', lang),
+        missingOn: t('Installed PV Nameplate', 'لوحة بيانات اللوح الشمسي المركب'),
+      };
+    case 'Imp_mod':
+      return {
+        key: 'pv.impA',
+        parameter: t('PV Module Max Power Current (Imp)', `تيار القدرة القصوى للوح (${ltr('Imp')})`),
+        categoryLabel: getCategoryLabel('PV_MODULE', lang),
+        missingOn: t('Installed PV Nameplate', 'لوحة بيانات اللوح الشمسي المركب'),
+      };
+    case 'β_Voc':
+      return {
+        key: 'pv.tempCoeffVocPctPerC',
+        parameter: t('PV Module Voc Temperature Coefficient (β_Voc)', `معامل الحرارة لجهد Voc (${ltr('β_Voc')})`),
+        categoryLabel: getCategoryLabel('PV_MODULE', lang),
+        missingOn: t('Installed PV Nameplate / Datasheet', 'لوحة اللوح الشمسي / النشرة الفنية'),
+      };
+    case 'N_pv':
+      return {
+        key: 'pv.quantity',
+        parameter: t('Installed PV Module Quantity (N_pv)', `عدد الألواح الشمسية المركبة (${ltr('N_pv')})`),
+        categoryLabel: getCategoryLabel('PV_MODULE', lang),
+        missingOn: t('Installed PV Nameplate', 'لوحة بيانات اللوح الشمسي المركب'),
+      };
+    case 'P_mod':
+      return {
+        key: 'pv.ratedPowerW',
+        parameter: t('PV Module Rated Power (Pmax)', `القدرة الاسمية للوح الشمسي (${ltr('Pmax')})`),
+        categoryLabel: getCategoryLabel('PV_MODULE', lang),
+        missingOn: t('Installed PV Nameplate', 'لوحة بيانات اللوح الشمسي المركب'),
+      };
+    case 'Vdc_max':
+      return {
+        key: 'inv.maxPvInputVoltageV',
+        parameter: t('Inverter Max PV Input Voltage (Vdc_max)', `أقصى جهد دخل للخلايا بالعاكس (${ltr('Vdc_max')})`),
+        categoryLabel: getCategoryLabel('INVERTER', lang),
+        missingOn: t('Installed Inverter Nameplate / Datasheet', 'لوحة بيانات العاكس / النشرة الفنية'),
+      };
+    case 'Vmppt_min':
+      return {
+        key: 'inv.mpptMinV',
+        parameter: t('Inverter MPPT Minimum Voltage (Vmppt_min)', `أدنى جهد MPPT بالعاكس (${ltr('Vmppt_min')})`),
+        categoryLabel: getCategoryLabel('INVERTER', lang),
+        missingOn: t('Installed Inverter Nameplate / Datasheet', 'لوحة بيانات العاكس / النشرة الفنية'),
+      };
+    case 'Vmppt_max':
+      return {
+        key: 'inv.mpptMaxV',
+        parameter: t('Inverter MPPT Maximum Voltage (Vmppt_max)', `أقصى جهد MPPT بالعاكس (${ltr('Vmppt_max')})`),
+        categoryLabel: getCategoryLabel('INVERTER', lang),
+        missingOn: t('Installed Inverter Nameplate / Datasheet', 'لوحة بيانات العاكس / النشرة الفنية'),
+      };
+    case 'Ipv_op_max':
+      return {
+        key: 'inv.maxPvOperatingCurrentA',
+        parameter: t('Inverter Max PV Operating Current (Ipv_op_max)', `أقصى تيار تشغيل PV بالعاكس (${ltr('Ipv_op_max')})`),
+        categoryLabel: getCategoryLabel('INVERTER', lang),
+        missingOn: t('Installed Inverter Nameplate / Datasheet', 'لوحة بيانات العاكس / النشرة الفنية'),
+      };
+    case 'Ipv_sc_max':
+      return {
+        key: 'inv.maxPvShortCircuitCurrentA',
+        parameter: t('Inverter Max PV Short-Circuit Current (Ipv_sc_max)', `أقصى تيار قصر PV بالعاكس (${ltr('Ipv_sc_max')})`),
+        categoryLabel: getCategoryLabel('INVERTER', lang),
+        missingOn: t('Installed Inverter Nameplate / Datasheet', 'لوحة بيانات العاكس / النشرة الفنية'),
+      };
+    case 'P_inv':
+      return {
+        key: 'inv.ratedPowerW',
+        parameter: t('Inverter Rated AC Power (P_inv)', `القدرة المترددة الاسمية للعاكس (${ltr('P_inv')})`),
+        categoryLabel: getCategoryLabel('INVERTER', lang),
+        missingOn: t('Installed Inverter Nameplate', 'لوحة بيانات العاكس المركب'),
+      };
+    case 'V_batt':
+      return {
+        key: 'batt.nominalVoltageV',
+        parameter: t('Battery Nominal Voltage (V_batt)', `الجهد الاسمي للبطارية (${ltr('V_batt')})`),
+        categoryLabel: getCategoryLabel('BATTERY', lang),
+        missingOn: t('Installed Battery Nameplate', 'لوحة بيانات البطارية المركبة'),
+      };
+    case 'V_inv_dc':
+      return {
+        key: 'inv.batteryBusVoltage',
+        parameter: t('Inverter Battery Bus Voltage / Operating Window', 'جهد / نطاق ناقل البطارية بالعاكس'),
+        categoryLabel: getCategoryLabel('INVERTER', lang),
+        missingOn: t('Installed Inverter Nameplate / Datasheet', 'لوحة بيانات العاكس / النشرة الفنية'),
+      };
+    default:
+      return undefined;
+  }
+}
 
 function mapComparisonMissingLabelToCanonicalKey(
   category: EquipmentCategory,
   rawLabel: string,
+  lang: Language = 'en',
 ): { key: string; parameter: string; missingOn: string } | null {
   const lower = rawLabel.toLowerCase();
-  if (lower.includes('user confirmation of ai-extracted')) {
+  if (
+    lower.includes('user confirmation of ai-extracted') ||
+    rawLabel.includes('تأكيد المستخدم لحقول لوحة البيانات')
+  ) {
     return null; // Handled in Record Gaps (unverifiedAiRecords)
   }
-  if (lower.includes('temp') && lower.includes('voc')) {
-    return {
-      key: 'pv.tempCoeffVocPctPerC',
-      parameter: SYMBOL_TO_CANONICAL_PARAM.β_Voc.parameter,
-      missingOn: SYMBOL_TO_CANONICAL_PARAM.β_Voc.missingOn,
-    };
+  if (
+    (lower.includes('temp') && lower.includes('voc')) ||
+    (rawLabel.includes('معامل') && lower.includes('voc'))
+  ) {
+    const meta = getCanonicalSymbolMeta('β_Voc', lang)!;
+    return { key: meta.key, parameter: meta.parameter, missingOn: meta.missingOn };
   }
-  if (lower.includes('operating current')) {
-    return {
-      key: 'inv.maxPvOperatingCurrentA',
-      parameter: SYMBOL_TO_CANONICAL_PARAM.Ipv_op_max.parameter,
-      missingOn: SYMBOL_TO_CANONICAL_PARAM.Ipv_op_max.missingOn,
-    };
+  if (
+    lower.includes('operating current') ||
+    rawLabel.includes('تيار التشغيل') ||
+    rawLabel.includes('تيار تشغيل') ||
+    lower.includes('imp limit')
+  ) {
+    const meta = getCanonicalSymbolMeta('Ipv_op_max', lang)!;
+    return { key: meta.key, parameter: meta.parameter, missingOn: meta.missingOn };
   }
-  if (lower.includes('short-circuit') || lower.includes('short circuit')) {
-    return {
-      key: 'inv.maxPvShortCircuitCurrentA',
-      parameter: SYMBOL_TO_CANONICAL_PARAM.Ipv_sc_max.parameter,
-      missingOn: SYMBOL_TO_CANONICAL_PARAM.Ipv_sc_max.missingOn,
-    };
+  if (
+    lower.includes('short-circuit') ||
+    lower.includes('short circuit') ||
+    rawLabel.includes('تيار قصر') ||
+    rawLabel.includes('تيار القصر') ||
+    lower.includes('isc limit')
+  ) {
+    const meta = getCanonicalSymbolMeta('Ipv_sc_max', lang)!;
+    return { key: meta.key, parameter: meta.parameter, missingOn: meta.missingOn };
   }
-  if (lower.includes('max pv input voltage')) {
-    return {
-      key: 'inv.maxPvInputVoltageV',
-      parameter: SYMBOL_TO_CANONICAL_PARAM.Vdc_max.parameter,
-      missingOn: SYMBOL_TO_CANONICAL_PARAM.Vdc_max.missingOn,
-    };
+  if (
+    (lower.includes('max') && lower.includes('pv input voltage')) ||
+    rawLabel.includes('أقصى جهد دخل')
+  ) {
+    const meta = getCanonicalSymbolMeta('Vdc_max', lang)!;
+    return { key: meta.key, parameter: meta.parameter, missingOn: meta.missingOn };
   }
+  if (lower.includes('mppt min') || rawLabel.includes('أدنى جهد mppt')) {
+    const meta = getCanonicalSymbolMeta('Vmppt_min', lang)!;
+    return { key: meta.key, parameter: meta.parameter, missingOn: meta.missingOn };
+  }
+  if (lower.includes('mppt max') || rawLabel.includes('أقصى جهد mppt')) {
+    const meta = getCanonicalSymbolMeta('Vmppt_max', lang)!;
+    return { key: meta.key, parameter: meta.parameter, missingOn: meta.missingOn };
+  }
+  if (
+    category === 'BATTERY' &&
+    (lower.includes('nominal voltage') || rawLabel.includes('الجهد الاسمي للبطارية'))
+  ) {
+    const meta = getCanonicalSymbolMeta('V_batt', lang)!;
+    return { key: meta.key, parameter: meta.parameter, missingOn: meta.missingOn };
+  }
+  if (
+    category === 'INVERTER' &&
+    (lower.includes('nominal battery') ||
+      lower.includes('bus voltage') ||
+      rawLabel.includes('ناقل البطارية'))
+  ) {
+    const meta = getCanonicalSymbolMeta('V_inv_dc', lang)!;
+    return { key: meta.key, parameter: meta.parameter, missingOn: meta.missingOn };
+  }
+  const catLabel = getCategoryLabel(category, lang);
   return {
-    key: `comp.${category}.${lower.replace(/[^a-z0-9]+/g, '_')}`,
-    parameter: rawLabel.replace(/^Unreadable on nameplate:\s*/i, ''),
-    missingOn: `${CATEGORY_LABELS[category]} record`,
+    key: `comp.${category}.${lower.replace(/[^a-z0-9\u0600-\u06FF]+/g, '_')}`,
+    parameter: rawLabel
+      .replace(/^Unreadable on nameplate:\s*/i, '')
+      .replace(/^غير مقروء على لوحة البيانات:\s*/, ''),
+    missingOn: lang === 'ar' ? `سجل ${catLabel}` : `${catLabel} record`,
   };
 }
 
@@ -1727,29 +2101,48 @@ export function buildMissingDataReport(
   project: SolarProject,
   comparisons: EquipmentComparisonResult[],
   checks: EngineeringCheckResult[],
+  lang: Language = 'en',
 ): MissingDataReport {
+  const isAr = lang === 'ar';
   const unquotedInstalled = comparisons
     .filter((c) => c.eligibility === 'UNQUOTED_INSTALLED')
-    .map((c) => `${c.label} (${c.installedSummary} — absent from quotation)`);
+    .map((c) =>
+      isAr
+        ? `${c.label} (${c.installedSummary} — غير مدرج في عرض السعر)`
+        : `${c.label} (${c.installedSummary} — absent from quotation)`,
+    );
 
   const missingInstalled = comparisons
     .filter((c) => c.eligibility === 'MISSING_INSTALLED')
-    .map((c) => `${c.label} (${c.promisedSummary} — not documented as installed)`);
+    .map((c) =>
+      isAr
+        ? `${c.label} (${c.promisedSummary} — غير موثق كمركب)`
+        : `${c.label} (${c.promisedSummary} — not documented as installed)`,
+    );
 
+  const tr = getTranslations(lang);
   const unverifiedAiRecords: string[] = [];
   for (const eq of project.installedEquipment) {
     const prov = resolveEquipmentProvenance(eq, project.isDemo);
     if (prov === 'AI_EXTRACTED' || prov === 'MANUAL_ENTRY') {
+      const mfg = eq.manufacturer ?? (isAr ? 'غير معروف' : 'Unknown');
+      const mod = eq.model ?? (isAr ? 'غير معروف' : 'Unknown');
       unverifiedAiRecords.push(
-        `Installed ${CATEGORY_LABELS[eq.category]} (${eq.manufacturer ?? 'Unknown'} ${eq.model ?? 'Unknown'}): ${prov}`,
+        isAr
+          ? `مركب: ${getCategoryLabel(eq.category, lang)} (${ltr(`${mfg} ${mod}`)}): ${tr.provenanceShort[prov]}`
+          : `Installed ${getCategoryLabel(eq.category, lang)} (${mfg} ${mod}): ${prov}`,
       );
     }
   }
   for (const eq of project.promisedEquipment) {
     const prov = resolveEquipmentProvenance(eq, project.isDemo);
     if (prov === 'AI_EXTRACTED' || prov === 'MANUAL_ENTRY') {
+      const mfg = eq.manufacturer ?? (isAr ? 'غير معروف' : 'Unknown');
+      const mod = eq.model ?? (isAr ? 'غير معروف' : 'Unknown');
       unverifiedAiRecords.push(
-        `Promised ${CATEGORY_LABELS[eq.category]} (${eq.manufacturer ?? 'Unknown'} ${eq.model ?? 'Unknown'}): ${prov}`,
+        isAr
+          ? `موعود: ${getCategoryLabel(eq.category, lang)} (${ltr(`${mfg} ${mod}`)}): ${tr.provenanceShort[prov]}`
+          : `Promised ${getCategoryLabel(eq.category, lang)} (${mfg} ${mod}): ${prov}`,
       );
     }
   }
@@ -1785,8 +2178,8 @@ export function buildMissingDataReport(
             ck.id === 'check-battery-voltage' &&
             (inp.symbol === 'V_batt_min' || inp.symbol === 'V_batt_max' || inp.symbol === 'V_inv_dc')
           ) {
-            if (ck.missingInputs.some((m) => m.includes('Battery Bus'))) {
-              const meta = SYMBOL_TO_CANONICAL_PARAM.V_inv_dc;
+            if (ck.missingInputs.some((m) => m.includes('V_inv_dc'))) {
+              const meta = getCanonicalSymbolMeta('V_inv_dc', lang)!;
               const entry = ensureEntry(meta.key, meta.parameter, meta.categoryLabel, meta.missingOn);
               if (!entry.blockedChecks.includes(ck.title)) {
                 entry.blockedChecks.push(ck.title);
@@ -1794,7 +2187,7 @@ export function buildMissingDataReport(
             }
             continue;
           }
-          const meta = SYMBOL_TO_CANONICAL_PARAM[inp.symbol];
+          const meta = getCanonicalSymbolMeta(inp.symbol, lang);
           if (meta) {
             const entry = ensureEntry(meta.key, meta.parameter, meta.categoryLabel, meta.missingOn);
             if (!entry.blockedChecks.includes(ck.title)) {
@@ -1814,7 +2207,7 @@ export function buildMissingDataReport(
   for (const comp of comparisons) {
     if (comp.eligibility !== 'ELIGIBLE') continue;
     for (const rawMissing of comp.missingFields) {
-      const mapped = mapComparisonMissingLabelToCanonicalKey(comp.category, rawMissing);
+      const mapped = mapComparisonMissingLabelToCanonicalKey(comp.category, rawMissing, lang);
       if (!mapped) continue;
       ensureEntry(mapped.key, mapped.parameter, comp.label, mapped.missingOn);
     }

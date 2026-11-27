@@ -11,17 +11,20 @@ import {
   FileText,
 } from 'lucide-react';
 import type { DataProvenance, EquipmentCategory, EquipmentSpec } from '../types/mithaq';
-import {
-  CATEGORY_LABELS,
-  detectSimulatedMarkers,
-  normalizeProvenance,
-} from '../engine/engineeringEngine';
+import { detectSimulatedMarkers, getCategoryLabel } from '../engine/engineeringEngine';
+import { useI18n } from '../i18n/I18nContext';
+import { fmt, type Language } from '../i18n/translations';
 import { safeFetchJson } from '../utils/api';
 import {
   CATEGORY_FIELD_DEFINITIONS,
   filterUnreadableFieldsByCategory,
+  getCategoryFieldLabel,
   sanitizeSpecFieldsByCategory,
 } from '../utils/categorySpecs';
+import {
+  extractTrackedFieldValues,
+  resolveManualEditProvenance,
+} from '../utils/equipmentProtection';
 
 interface EquipmentFormModalProps {
   mode: 'PROMISED' | 'INSTALLED';
@@ -43,6 +46,17 @@ function toNumOrNull(val: string): number | null {
 function toStrOrNull(val: string): string | null {
   const trimmed = val.trim();
   return trimmed ? trimmed : null;
+}
+
+function localizeUnreadableLabel(category: EquipmentCategory, raw: string, lang: Language): string {
+  const norm = raw.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const match = CATEGORY_FIELD_DEFINITIONS[category].find(
+    (d) =>
+      d.key.toLowerCase() === norm ||
+      d.label.toLowerCase().replace(/[^a-z0-9]/g, '') === norm ||
+      d.aliases.some((a) => a.replace(/[^a-z0-9]/g, '') === norm),
+  );
+  return match ? getCategoryFieldLabel(category, match.key, lang) : raw;
 }
 
 function fileToBase64(file: File): Promise<string> {
@@ -67,6 +81,7 @@ export function EquipmentFormModal({
   onSave,
   onClose,
 }: EquipmentFormModalProps) {
+  const { lang, tr: t } = useI18n();
   const [category, setCategory] = useState<EquipmentCategory>(
     initialSpec?.category ?? defaultCategory,
   );
@@ -160,6 +175,10 @@ export function EquipmentFormModal({
   const [fieldProvenance, setFieldProvenance] = useState<Partial<Record<string, DataProvenance>>>(
     initialSpec?.fieldProvenance ?? {},
   );
+  const [baselineValues, setBaselineValues] = useState<Record<string, unknown>>(() =>
+    extractTrackedFieldValues(initialSpec),
+  );
+  const [userConfirmedVerifyAfterEdit, setUserConfirmedVerifyAfterEdit] = useState(false);
 
   // Datasheet supplementation UI state
   const [showDatasheetPanel, setShowDatasheetPanel] = useState(defaultOpenDatasheet);
@@ -214,7 +233,7 @@ export function EquipmentFormModal({
     try {
       let base64Data: string | undefined;
       let mimeType: string | undefined;
-      let fileName = datasheetFile?.name;
+      const fileName = datasheetFile?.name;
 
       if (datasheetFile) {
         base64Data = await fileToBase64(datasheetFile);
@@ -236,159 +255,151 @@ export function EquipmentFormModal({
       });
 
       if (!result.ok || !result.data) {
-        setDatasheetError(
-          result.error ??
-            'Datasheet extraction failed. Enter missing specifications manually below.',
-        );
+        setDatasheetError(result.error ?? t.modal.datasheetFailedErr);
         return;
       }
 
       const ds = sanitizeSpecFieldsByCategory(category, result.data);
       const filledFields: string[] = [];
       const nextFieldProv: Partial<Record<string, DataProvenance>> = { ...fieldProvenance };
+      const nextBaseline: Record<string, unknown> = { ...baselineValues };
 
       const fillStr = (
-        fieldKey: string,
+        fieldKey: 'manufacturer' | 'model',
         current: string,
         setter: (v: string) => void,
         val: unknown,
-        label: string,
       ) => {
         if (!current.trim() && typeof val === 'string' && val.trim()) {
-          setter(val.trim());
-          filledFields.push(label);
+          const trimmed = val.trim();
+          setter(trimmed);
+          filledFields.push(getCategoryFieldLabel(category, fieldKey, lang));
           nextFieldProv[fieldKey] = 'DATASHEET_VERIFIED';
+          nextBaseline[fieldKey] = trimmed;
         }
       };
       const fillNum = (
-        fieldKey: string,
+        fieldKey:
+          | 'ratedPowerW'
+          | 'capacityKwh'
+          | 'nominalVoltageV'
+          | 'vocV'
+          | 'vmpV'
+          | 'iscA'
+          | 'impA'
+          | 'tempCoeffVocPctPerC'
+          | 'maxPvInputVoltageV'
+          | 'mpptMinV'
+          | 'mpptMaxV'
+          | 'maxPvOperatingCurrentA'
+          | 'maxPvShortCircuitCurrentA'
+          | 'minBatteryVoltageV'
+          | 'maxBatteryVoltageV',
         current: string,
         setter: (v: string) => void,
         val: unknown,
-        label: string,
       ) => {
         if (!current.trim() && typeof val === 'number' && Number.isFinite(val)) {
           setter(String(val));
-          filledFields.push(label);
+          filledFields.push(getCategoryFieldLabel(category, fieldKey, lang));
           nextFieldProv[fieldKey] = 'DATASHEET_VERIFIED';
+          nextBaseline[fieldKey] = val;
         }
       };
 
-      fillStr('manufacturer', manufacturer, setManufacturer, ds.manufacturer, 'Manufacturer');
-      fillStr('model', model, setModel, ds.model, 'Model');
+      fillStr('manufacturer', manufacturer, setManufacturer, ds.manufacturer);
+      fillStr('model', model, setModel, ds.model);
 
       if (category === 'PV_MODULE') {
-        fillNum('ratedPowerW', ratedPowerW, setRatedPowerW, ds.ratedPowerW, 'Rated Power (W)');
-        fillNum('vocV', vocV, setVocV, ds.vocV, 'Voc (V)');
-        fillNum('vmpV', vmpV, setVmpV, ds.vmpV, 'Vmp (V)');
-        fillNum('iscA', iscA, setIscA, ds.iscA, 'Isc (A)');
-        fillNum('impA', impA, setImpA, ds.impA, 'Imp (A)');
-        fillNum(
-          'tempCoeffVocPctPerC',
-          tempCoeff,
-          setTempCoeff,
-          ds.tempCoeffVocPctPerC,
-          'Temp. Coeff of Voc',
-        );
+        fillNum('ratedPowerW', ratedPowerW, setRatedPowerW, ds.ratedPowerW);
+        fillNum('vocV', vocV, setVocV, ds.vocV);
+        fillNum('vmpV', vmpV, setVmpV, ds.vmpV);
+        fillNum('iscA', iscA, setIscA, ds.iscA);
+        fillNum('impA', impA, setImpA, ds.impA);
+        fillNum('tempCoeffVocPctPerC', tempCoeff, setTempCoeff, ds.tempCoeffVocPctPerC);
       } else if (category === 'INVERTER') {
-        fillNum('ratedPowerW', ratedPowerW, setRatedPowerW, ds.ratedPowerW, 'Rated Power (W)');
-        fillNum(
-          'nominalVoltageV',
-          nominalVoltageV,
-          setNominalVoltageV,
-          ds.nominalVoltageV,
-          'Nominal Battery Voltage',
-        );
+        fillNum('ratedPowerW', ratedPowerW, setRatedPowerW, ds.ratedPowerW);
+        fillNum('nominalVoltageV', nominalVoltageV, setNominalVoltageV, ds.nominalVoltageV);
         fillNum(
           'minBatteryVoltageV',
           minBatteryVoltageV,
           setMinBatteryVoltageV,
           ds.minBatteryVoltageV,
-          'Min Battery Voltage',
         );
         fillNum(
           'maxBatteryVoltageV',
           maxBatteryVoltageV,
           setMaxBatteryVoltageV,
           ds.maxBatteryVoltageV,
-          'Max Battery Voltage',
         );
         fillNum(
           'maxPvInputVoltageV',
           maxPvInputVoltageV,
           setMaxPvInputVoltageV,
           ds.maxPvInputVoltageV,
-          'Max PV Input Voltage',
         );
         fillNum(
           'maxPvOperatingCurrentA',
           maxPvOperatingCurrentA,
           setMaxPvOperatingCurrentA,
           ds.maxPvOperatingCurrentA,
-          'Max PV Operating Current',
         );
         fillNum(
           'maxPvShortCircuitCurrentA',
           maxPvShortCircuitCurrentA,
           setMaxPvShortCircuitCurrentA,
           ds.maxPvShortCircuitCurrentA,
-          'Max PV Short-Circuit Current',
         );
-        fillNum('mpptMinV', mpptMinV, setMpptMinV, ds.mpptMinV, 'MPPT Min Voltage');
-        fillNum('mpptMaxV', mpptMaxV, setMpptMaxV, ds.mpptMaxV, 'MPPT Max Voltage');
+        fillNum('mpptMinV', mpptMinV, setMpptMinV, ds.mpptMinV);
+        fillNum('mpptMaxV', mpptMaxV, setMpptMaxV, ds.mpptMaxV);
       } else if (category === 'BATTERY') {
-        fillNum(
-          'nominalVoltageV',
-          nominalVoltageV,
-          setNominalVoltageV,
-          ds.nominalVoltageV,
-          'Nominal Voltage',
-        );
+        fillNum('nominalVoltageV', nominalVoltageV, setNominalVoltageV, ds.nominalVoltageV);
         fillNum(
           'minBatteryVoltageV',
           minBatteryVoltageV,
           setMinBatteryVoltageV,
           ds.minBatteryVoltageV,
-          'Min Operating Voltage',
         );
         fillNum(
           'maxBatteryVoltageV',
           maxBatteryVoltageV,
           setMaxBatteryVoltageV,
           ds.maxBatteryVoltageV,
-          'Max Operating Voltage',
         );
-        fillNum('capacityKwh', capacityKwh, setCapacityKwh, ds.capacityKwh, 'Capacity (kWh)');
+        fillNum('capacityKwh', capacityKwh, setCapacityKwh, ds.capacityKwh);
       }
 
       if (typeof ds.additionalSpecs === 'string' && ds.additionalSpecs.trim()) {
         if (!additionalSpecs.trim()) {
-          setAdditionalSpecs(ds.additionalSpecs.trim());
-          filledFields.push('Additional Specs');
+          const trimmedNotes = ds.additionalSpecs.trim();
+          setAdditionalSpecs(trimmedNotes);
+          filledFields.push(getCategoryFieldLabel(category, 'additionalSpecs', lang));
+          nextFieldProv['additionalSpecs'] = 'DATASHEET_VERIFIED';
+          nextBaseline['additionalSpecs'] = trimmedNotes;
         }
       }
 
       setFieldProvenance(nextFieldProv);
+      setBaselineValues(nextBaseline);
 
       if (fileName) {
         setDatasheetFileName(fileName);
       } else if (!datasheetFileName) {
-        setDatasheetFileName('Pasted Datasheet Text');
+        setDatasheetFileName(t.modal.pastedDatasheetText);
       }
 
       if (filledFields.length > 0) {
         setDatasheetSuccess(
-          `Supplemented ${filledFields.length} missing field(s) from datasheet: ${filledFields.join(', ')}. Original AI nameplate read remains preserved.`,
+          fmt(t.modal.datasheetSupplemented, {
+            count: filledFields.length,
+            fields: filledFields.join(' · '),
+          }),
         );
       } else {
-        setDatasheetSuccess(
-          'Datasheet parsed, and all missing fields either were not explicitly listed in the datasheet or are already populated.',
-        );
+        setDatasheetSuccess(t.modal.datasheetNoNewFields);
       }
     } catch (err) {
-      setDatasheetError(
-        err instanceof Error ? err.message : 'Unable to read datasheet document.',
-      );
+      setDatasheetError(err instanceof Error ? err.message : t.modal.datasheetReadErr);
     } finally {
       setDatasheetLoading(false);
     }
@@ -424,37 +435,54 @@ export function EquipmentFormModal({
     const allowedDefs = CATEGORY_FIELD_DEFINITIONS[category];
     const remainingUnreadable = filteredUnreadable.filter((label) => {
       const matchingDef = allowedDefs.find(
-        (d) => d.label.toLowerCase() === label.toLowerCase() || label.toLowerCase().includes(d.key.toLowerCase()),
+        (d) =>
+          d.label.toLowerCase() === label.toLowerCase() ||
+          label.toLowerCase().includes(d.key.toLowerCase()),
       );
       if (!matchingDef) return true;
       const val = sanitized[matchingDef.key];
       return val === null || val === undefined || val === '';
     });
 
-    const effectiveVerified = isSimulatedRecord ? false : verifiedByUser;
-    const baseProvenance: DataProvenance = isSimulatedRecord
-      ? 'SIMULATED'
-      : effectiveVerified
-        ? 'USER_VERIFIED'
-        : datasheetFileName && !initialSpec?.originalAiExtraction
-          ? 'DATASHEET_VERIFIED'
-          : initialSpec
-            ? normalizeProvenance(initialSpec.provenance)
-            : 'MANUAL_ENTRY';
+    const parsedQty = toNumOrNull(quantity);
+    const provenanceResolution = resolveManualEditProvenance({
+      initialSpec,
+      baselineValues,
+      nextValues: sanitized,
+      nextQuantity: parsedQty,
+      workingFieldProvenance: fieldProvenance,
+      datasheetFileName,
+      verifiedByUser: !isSimulatedRecord && verifiedByUser,
+      isSimulatedRecord,
+      projectIsDemo,
+    });
 
-    const resolvedProvenance: DataProvenance =
+    const editedWithoutReverify =
       !isSimulatedRecord &&
-      baseProvenance === 'USER_VERIFIED' &&
-      !effectiveVerified
-        ? 'MANUAL_ENTRY'
-        : baseProvenance;
+      provenanceResolution.manuallyEditedFields.length > 0 &&
+      Boolean(initialSpec?.verifiedByUser) &&
+      !userConfirmedVerifyAfterEdit;
+
+    const finalProvenance = editedWithoutReverify
+      ? resolveManualEditProvenance({
+          initialSpec,
+          baselineValues,
+          nextValues: sanitized,
+          nextQuantity: parsedQty,
+          workingFieldProvenance: fieldProvenance,
+          datasheetFileName,
+          verifiedByUser: false,
+          isSimulatedRecord,
+          projectIsDemo,
+        })
+      : provenanceResolution;
 
     const spec: EquipmentSpec = {
       id: initialSpec?.id ?? `eq-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       category,
       manufacturer: (sanitized.manufacturer as string | null) ?? null,
       model: (sanitized.model as string | null) ?? null,
-      quantity: toNumOrNull(quantity),
+      quantity: parsedQty,
       ratedPowerW: (sanitized.ratedPowerW as number | null) ?? null,
       capacityKwh: (sanitized.capacityKwh as number | null) ?? null,
       nominalVoltageV: (sanitized.nominalVoltageV as number | null) ?? null,
@@ -472,37 +500,39 @@ export function EquipmentFormModal({
       maxBatteryVoltageV: (sanitized.maxBatteryVoltageV as number | null) ?? null,
       serialNumber: (sanitized.serialNumber as string | null) ?? null,
       additionalSpecs: (sanitized.additionalSpecs as string | null) ?? undefined,
-      provenance: resolvedProvenance,
-      fieldProvenance,
-      uncertainFields: effectiveVerified ? [] : initialSpec?.uncertainFields ?? [],
+      provenance: finalProvenance.provenance,
+      fieldProvenance: finalProvenance.fieldProvenance,
+      uncertainFields: finalProvenance.verifiedByUser ? [] : initialSpec?.uncertainFields ?? [],
       unreadableFields: remainingUnreadable,
       sourceFileName: initialSpec?.sourceFileName,
       sourceImagePreview: initialSpec?.sourceImagePreview,
       datasheetFileName,
       originalAiExtraction: initialSpec?.originalAiExtraction,
-      verifiedByUser: effectiveVerified,
+      verifiedByUser: finalProvenance.verifiedByUser,
     };
     onSave(spec);
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/60 flex items-center justify-center p-4">
+    <div
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-50 bg-slate-950/60 flex items-center justify-center p-4"
+    >
       <div className="bg-white border border-slate-200 rounded-lg max-w-3xl w-full max-h-[90vh] flex flex-col">
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
           <div>
             <h3 className="text-base font-semibold text-slate-900">
-              {initialSpec ? 'Review & Edit' : 'Add'}{' '}
-              {mode === 'PROMISED' ? 'Promised Quotation Equipment' : 'Installed Nameplate Equipment'}
+              {initialSpec ? t.modal.reviewEdit : t.modal.add} —{' '}
+              {mode === 'PROMISED' ? t.modal.promisedTitle : t.modal.installedTitle}
             </h3>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Leave blank if unknown. MITHAQ-Lab never assumes missing technical parameters.
-            </p>
+            <p className="text-xs text-slate-500 mt-0.5">{t.modal.subtitle}</p>
           </div>
           <button
             type="button"
             onClick={onClose}
             className="p-2 text-slate-500 hover:text-slate-900 rounded-md hover:bg-slate-100"
-            aria-label="Close modal"
+            aria-label={t.modal.closeAria}
           >
             <X className="w-4 h-4" />
           </button>
@@ -513,12 +543,9 @@ export function EquipmentFormModal({
             <div className="bg-amber-50 border border-amber-300 rounded-md p-3 text-xs text-amber-950 flex items-start gap-2.5">
               <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
               <div className="space-y-1">
-                <div className="font-semibold">
-                  SIMULATED / PROTOTYPE DATA DETECTED — CANNOT BE MARKED AS VERIFIED REAL EQUIPMENT
-                </div>
+                <div className="font-semibold">{t.modal.simDetectedTitle}</div>
                 <p className="text-[11px] text-amber-900">
-                  {simulatedReasons.join('. ')}. This record is locked to{' '}
-                  <span className="font-mono font-semibold">SIMULATED</span> provenance.
+                  {fmt(t.modal.simDetectedBody, { reasons: simulatedReasons.join(' · ') })}
                 </p>
               </div>
             </div>
@@ -530,21 +557,23 @@ export function EquipmentFormModal({
               <div className="space-y-1">
                 {initialSpec?.uncertainFields && initialSpec.uncertainFields.length > 0 && (
                   <p>
-                    <span className="font-semibold">Uncertain extraction fields:</span>{' '}
-                    {initialSpec.uncertainFields.join(', ')}
+                    <span className="font-semibold">{t.modal.uncertainFieldsLabel}</span>{' '}
+                    {initialSpec.uncertainFields.join(' · ')}
                   </p>
                 )}
                 {filteredUnreadable.length > 0 && (
                   <p>
                     <span className="font-semibold">
-                      Missing / unreadable on {CATEGORY_LABELS[category]} nameplate:
+                      {fmt(t.modal.missingUnreadableLabel, {
+                        category: getCategoryLabel(category, lang),
+                      })}
                     </span>{' '}
-                    {filteredUnreadable.join(', ')}
+                    {filteredUnreadable
+                      .map((item) => localizeUnreadableLabel(category, item, lang))
+                      .join(' · ')}
                   </p>
                 )}
-                <p className="text-[11px] text-amber-800">
-                  Enter any verified values manually below or upload the manufacturer datasheet.
-                </p>
+                <p className="text-[11px] text-amber-800">{t.modal.manualOrDatasheetHint}</p>
               </div>
             </div>
           ) : null}
@@ -559,7 +588,7 @@ export function EquipmentFormModal({
               >
                 <span className="inline-flex items-center gap-1.5">
                   <Eye className="w-3.5 h-3.5 text-slate-600" />
-                  Original AI Nameplate Extraction (Preserved Read-Only Reference)
+                  {t.modal.origAiTitle}
                 </span>
                 {showOriginalAi ? (
                   <ChevronUp className="w-3.5 h-3.5 text-slate-500" />
@@ -570,11 +599,23 @@ export function EquipmentFormModal({
               {showOriginalAi && (
                 <div className="px-3.5 pb-3 pt-1 border-t border-slate-200 space-y-2 text-xs">
                   <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500">
-                    <span>Category: {CATEGORY_LABELS[originalSnapshot.category]}</span>
+                    <span>
+                      {t.modal.categoryLabel} {getCategoryLabel(originalSnapshot.category, lang)}
+                    </span>
                     {originalSnapshot.sourceFileName && (
-                      <span>Photo: {originalSnapshot.sourceFileName}</span>
+                      <span>
+                        {t.modal.photoLabel}{' '}
+                        <span dir="ltr" className="font-mono inline-block">
+                          {originalSnapshot.sourceFileName}
+                        </span>
+                      </span>
                     )}
-                    <span>Read at: {new Date(originalSnapshot.extractedAt).toLocaleString()}</span>
+                    <span>
+                      {t.modal.readAtLabel}{' '}
+                      <span dir="ltr" className="inline-block font-mono">
+                        {new Date(originalSnapshot.extractedAt).toLocaleString()}
+                      </span>
+                    </span>
                   </div>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 font-mono text-[11px]">
                     {CATEGORY_FIELD_DEFINITIONS[originalSnapshot.category]
@@ -584,16 +625,22 @@ export function EquipmentFormModal({
                           originalSnapshot.fields[
                             def.key as keyof typeof originalSnapshot.fields
                           ];
+                        const hasOrig = rawVal !== null && rawVal !== undefined && rawVal !== '';
                         return (
                           <div
                             key={def.key}
                             className="bg-white border border-slate-200 rounded px-2 py-1.5"
                           >
-                            <div className="text-[10px] font-sans text-slate-500">{def.label}</div>
-                            <div className="text-slate-900 font-medium truncate">
-                              {rawVal !== null && rawVal !== undefined && rawVal !== ''
+                            <div className="text-[10px] font-sans text-slate-500">
+                              {getCategoryFieldLabel(originalSnapshot.category, def.key, lang)}
+                            </div>
+                            <div
+                              dir={hasOrig ? 'ltr' : undefined}
+                              className="text-slate-900 font-medium truncate text-start"
+                            >
+                              {hasOrig
                                 ? `${rawVal}${def.unit ? ` ${def.unit}` : ''}`
-                                : 'Not readable'}
+                                : t.common.notReadable}
                             </div>
                           </div>
                         );
@@ -601,7 +648,7 @@ export function EquipmentFormModal({
                   </div>
                   {originalSnapshot.confidenceNotes && (
                     <div className="text-[11px] text-slate-600">
-                      <span className="font-semibold">AI Label Notes:</span>{' '}
+                      <span className="font-semibold">{t.modal.aiNotesLabel}</span>{' '}
                       {originalSnapshot.confidenceNotes}
                     </div>
                   )}
@@ -620,9 +667,11 @@ export function EquipmentFormModal({
               >
                 <span className="inline-flex items-center gap-1.5">
                   <FileText className="w-3.5 h-3.5 text-slate-600" />
-                  Upload Manufacturer Datasheet for Missing Specs (Optional)
+                  {t.modal.uploadDatasheetToggle}
                   {datasheetFileName && (
-                    <span className="font-normal text-emerald-700">· {datasheetFileName}</span>
+                    <span dir="ltr" className="font-normal text-emerald-700 inline-block">
+                      · {datasheetFileName}
+                    </span>
                   )}
                 </span>
                 {showDatasheetPanel ? (
@@ -635,14 +684,14 @@ export function EquipmentFormModal({
               {showDatasheetPanel && (
                 <div className="p-3.5 border-t border-slate-200 space-y-3 text-xs">
                   <p className="text-slate-600">
-                    Upload the official {CATEGORY_LABELS[category]} datasheet (PDF, image, TXT, CSV)
-                    or paste datasheet text to fill only missing specifications without overwriting
-                    your original AI nameplate read.
+                    {fmt(t.modal.datasheetIntro, {
+                      category: getCategoryLabel(category, lang),
+                    })}
                   </p>
                   <div className="flex flex-col sm:flex-row sm:items-center gap-2">
                     <label className="inline-flex items-center gap-1.5 px-3 py-1.5 font-semibold text-slate-800 bg-slate-50 border border-slate-300 rounded-md hover:bg-slate-100 cursor-pointer whitespace-nowrap">
                       <FileUp className="w-3.5 h-3.5" />
-                      {datasheetFile ? datasheetFile.name : 'Choose Datasheet File'}
+                      {datasheetFile ? datasheetFile.name : t.modal.chooseDatasheetFile}
                       <input
                         type="file"
                         accept=".pdf,.txt,.csv,image/jpeg,image/png,image/webp"
@@ -658,15 +707,16 @@ export function EquipmentFormModal({
                     >
                       {datasheetLoading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                       {datasheetLoading
-                        ? 'Extracting Datasheet...'
-                        : 'Extract Missing Specs from Datasheet'}
+                        ? t.modal.extractingDatasheet
+                        : t.modal.extractDatasheetBtn}
                     </button>
                   </div>
                   <textarea
+                    dir="ltr"
                     rows={2}
                     value={datasheetRawText}
                     onChange={(e) => setDatasheetRawText(e.target.value)}
-                    placeholder="Or paste datasheet specification table excerpt here..."
+                    placeholder={t.modal.datasheetTextPlaceholder}
                     className="w-full px-2.5 py-1.5 text-xs font-mono border border-slate-300 rounded-md"
                   />
                   {datasheetError && (
@@ -687,50 +737,58 @@ export function EquipmentFormModal({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1">
-                Equipment Category
+                {t.modal.categoryLabel.replace(':', '')}
               </label>
               <select
                 value={category}
                 onChange={(e) => setCategory(e.target.value as EquipmentCategory)}
                 className="w-full px-3 py-2 text-sm border border-slate-300 rounded-md bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900"
               >
-                <option value="PV_MODULE">{CATEGORY_LABELS.PV_MODULE}</option>
-                <option value="INVERTER">{CATEGORY_LABELS.INVERTER}</option>
-                <option value="BATTERY">{CATEGORY_LABELS.BATTERY}</option>
+                <option value="PV_MODULE">{getCategoryLabel('PV_MODULE', lang)}</option>
+                <option value="INVERTER">{getCategoryLabel('INVERTER', lang)}</option>
+                <option value="BATTERY">{getCategoryLabel('BATTERY', lang)}</option>
               </select>
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">Quantity (Units)</label>
+              <label className="block text-xs font-medium text-slate-700 mb-1">
+                {t.modal.quantityLabel}
+              </label>
               <input
+                dir="ltr"
                 type="number"
                 step="any"
                 min="0"
                 value={quantity}
                 onChange={(e) => setQuantity(e.target.value)}
-                placeholder="e.g. 16"
+                placeholder={t.modal.quantityPlaceholder}
                 className="w-full px-3 py-2 text-sm font-mono tabular-nums border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-900"
               />
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">Manufacturer</label>
+              <label className="block text-xs font-medium text-slate-700 mb-1">
+                {t.modal.mfgLabel}
+              </label>
               <input
                 type="text"
                 value={manufacturer}
                 onChange={(e) => setManufacturer(e.target.value)}
-                placeholder="e.g. Jinko Solar Co., Ltd."
+                placeholder={t.modal.mfgPlaceholder}
                 className="w-full px-3 py-2 text-sm border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-900"
               />
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">Model Designation</label>
+              <label className="block text-xs font-medium text-slate-700 mb-1">
+                {t.modal.modelLabel}
+              </label>
               <input
+                dir="ltr"
                 type="text"
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
-                placeholder="e.g. JKM540M-72HL4-V"
+                placeholder={t.modal.modelPlaceholder}
                 className="w-full px-3 py-2 text-sm font-mono border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-900"
               />
             </div>
@@ -739,12 +797,15 @@ export function EquipmentFormModal({
           {category === 'PV_MODULE' && (
             <div className="pt-3 border-t border-slate-200">
               <h4 className="text-xs font-semibold text-slate-700 mb-3">
-                Solar PV Module Electrical Specifications (STC)
+                {t.modal.pvSectionTitle}
               </h4>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
                 <div>
-                  <label className="block text-xs text-slate-600 mb-1">Rated Power Pmax (W)</label>
+                  <label className="block text-xs text-slate-600 mb-1">
+                    {getCategoryFieldLabel('PV_MODULE', 'ratedPowerW', lang)} (W)
+                  </label>
                   <input
+                    dir="ltr"
                     type="number"
                     step="any"
                     value={ratedPowerW}
@@ -753,8 +814,11 @@ export function EquipmentFormModal({
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-slate-600 mb-1">Voc (V)</label>
+                  <label className="block text-xs text-slate-600 mb-1">
+                    {getCategoryFieldLabel('PV_MODULE', 'vocV', lang)} (V)
+                  </label>
                   <input
+                    dir="ltr"
                     type="number"
                     step="any"
                     value={vocV}
@@ -763,8 +827,11 @@ export function EquipmentFormModal({
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-slate-600 mb-1">Vmp (V)</label>
+                  <label className="block text-xs text-slate-600 mb-1">
+                    {getCategoryFieldLabel('PV_MODULE', 'vmpV', lang)} (V)
+                  </label>
                   <input
+                    dir="ltr"
                     type="number"
                     step="any"
                     value={vmpV}
@@ -773,8 +840,11 @@ export function EquipmentFormModal({
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-slate-600 mb-1">Isc (A)</label>
+                  <label className="block text-xs text-slate-600 mb-1">
+                    {getCategoryFieldLabel('PV_MODULE', 'iscA', lang)} (A)
+                  </label>
                   <input
+                    dir="ltr"
                     type="number"
                     step="any"
                     value={iscA}
@@ -783,8 +853,11 @@ export function EquipmentFormModal({
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-slate-600 mb-1">Imp (A)</label>
+                  <label className="block text-xs text-slate-600 mb-1">
+                    {getCategoryFieldLabel('PV_MODULE', 'impA', lang)} (A)
+                  </label>
                   <input
+                    dir="ltr"
                     type="number"
                     step="any"
                     value={impA}
@@ -793,13 +866,16 @@ export function EquipmentFormModal({
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-slate-600 mb-1">Voc Temp Coeff (%/°C)</label>
+                  <label className="block text-xs text-slate-600 mb-1">
+                    {getCategoryFieldLabel('PV_MODULE', 'tempCoeffVocPctPerC', lang)} (%/°C)
+                  </label>
                   <input
+                    dir="ltr"
                     type="number"
                     step="any"
                     value={tempCoeff}
                     onChange={(e) => setTempCoeff(e.target.value)}
-                    placeholder="e.g. -0.28"
+                    placeholder="-0.28"
                     className="w-full px-3 py-2 text-sm font-mono tabular-nums border border-slate-300 rounded-md"
                   />
                 </div>
@@ -810,12 +886,15 @@ export function EquipmentFormModal({
           {category === 'INVERTER' && (
             <div className="pt-3 border-t border-slate-200">
               <h4 className="text-xs font-semibold text-slate-700 mb-3">
-                Inverter Electrical Limits & Battery Bus
+                {t.modal.invSectionTitle}
               </h4>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
                 <div>
-                  <label className="block text-xs text-slate-600 mb-1">Rated Power (W)</label>
+                  <label className="block text-xs text-slate-600 mb-1">
+                    {getCategoryFieldLabel('INVERTER', 'ratedPowerW', lang)} (W)
+                  </label>
                   <input
+                    dir="ltr"
                     type="number"
                     step="any"
                     value={ratedPowerW}
@@ -824,8 +903,11 @@ export function EquipmentFormModal({
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-slate-600 mb-1">Max PV Input Voltage (V)</label>
+                  <label className="block text-xs text-slate-600 mb-1">
+                    {getCategoryFieldLabel('INVERTER', 'maxPvInputVoltageV', lang)} (V)
+                  </label>
                   <input
+                    dir="ltr"
                     type="number"
                     step="any"
                     value={maxPvInputVoltageV}
@@ -835,33 +917,38 @@ export function EquipmentFormModal({
                 </div>
                 <div>
                   <label className="block text-xs text-slate-600 mb-1">
-                    Max PV Operating Current (Imp, A)
+                    {getCategoryFieldLabel('INVERTER', 'maxPvOperatingCurrentA', lang)} (A)
                   </label>
                   <input
+                    dir="ltr"
                     type="number"
                     step="any"
                     value={maxPvOperatingCurrentA}
                     onChange={(e) => setMaxPvOperatingCurrentA(e.target.value)}
-                    placeholder="e.g. 22"
+                    placeholder="22"
                     className="w-full px-3 py-2 text-sm font-mono tabular-nums border border-slate-300 rounded-md"
                   />
                 </div>
                 <div>
                   <label className="block text-xs text-slate-600 mb-1">
-                    Max PV Short-Circuit Current (Isc, A)
+                    {getCategoryFieldLabel('INVERTER', 'maxPvShortCircuitCurrentA', lang)} (A)
                   </label>
                   <input
+                    dir="ltr"
                     type="number"
                     step="any"
                     value={maxPvShortCircuitCurrentA}
                     onChange={(e) => setMaxPvShortCircuitCurrentA(e.target.value)}
-                    placeholder="e.g. 26"
+                    placeholder="26"
                     className="w-full px-3 py-2 text-sm font-mono tabular-nums border border-slate-300 rounded-md"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-slate-600 mb-1">MPPT Min Voltage (V)</label>
+                  <label className="block text-xs text-slate-600 mb-1">
+                    {getCategoryFieldLabel('INVERTER', 'mpptMinV', lang)} (V)
+                  </label>
                   <input
+                    dir="ltr"
                     type="number"
                     step="any"
                     value={mpptMinV}
@@ -870,8 +957,11 @@ export function EquipmentFormModal({
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-slate-600 mb-1">MPPT Max Voltage (V)</label>
+                  <label className="block text-xs text-slate-600 mb-1">
+                    {getCategoryFieldLabel('INVERTER', 'mpptMaxV', lang)} (V)
+                  </label>
                   <input
+                    dir="ltr"
                     type="number"
                     step="any"
                     value={mpptMaxV}
@@ -880,19 +970,25 @@ export function EquipmentFormModal({
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-slate-600 mb-1">Nominal Battery Voltage (V)</label>
+                  <label className="block text-xs text-slate-600 mb-1">
+                    {getCategoryFieldLabel('INVERTER', 'nominalVoltageV', lang)} (V)
+                  </label>
                   <input
+                    dir="ltr"
                     type="number"
                     step="any"
                     value={nominalVoltageV}
                     onChange={(e) => setNominalVoltageV(e.target.value)}
-                    placeholder="e.g. 48"
+                    placeholder="48"
                     className="w-full px-3 py-2 text-sm font-mono tabular-nums border border-slate-300 rounded-md"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-slate-600 mb-1">Minimum Battery Voltage (V)</label>
+                  <label className="block text-xs text-slate-600 mb-1">
+                    {getCategoryFieldLabel('INVERTER', 'minBatteryVoltageV', lang)} (V)
+                  </label>
                   <input
+                    dir="ltr"
                     type="number"
                     step="any"
                     value={minBatteryVoltageV}
@@ -901,8 +997,11 @@ export function EquipmentFormModal({
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-slate-600 mb-1">Maximum Battery Voltage (V)</label>
+                  <label className="block text-xs text-slate-600 mb-1">
+                    {getCategoryFieldLabel('INVERTER', 'maxBatteryVoltageV', lang)} (V)
+                  </label>
                   <input
+                    dir="ltr"
                     type="number"
                     step="any"
                     value={maxBatteryVoltageV}
@@ -917,12 +1016,15 @@ export function EquipmentFormModal({
           {category === 'BATTERY' && (
             <div className="pt-3 border-t border-slate-200">
               <h4 className="text-xs font-semibold text-slate-700 mb-3">
-                Battery Storage Specifications
+                {t.modal.battSectionTitle}
               </h4>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
-                  <label className="block text-xs text-slate-600 mb-1">Capacity (kWh)</label>
+                  <label className="block text-xs text-slate-600 mb-1">
+                    {getCategoryFieldLabel('BATTERY', 'capacityKwh', lang)} (kWh)
+                  </label>
                   <input
+                    dir="ltr"
                     type="number"
                     step="any"
                     value={capacityKwh}
@@ -931,8 +1033,11 @@ export function EquipmentFormModal({
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-slate-600 mb-1">Nominal Voltage (V)</label>
+                  <label className="block text-xs text-slate-600 mb-1">
+                    {getCategoryFieldLabel('BATTERY', 'nominalVoltageV', lang)} (V)
+                  </label>
                   <input
+                    dir="ltr"
                     type="number"
                     step="any"
                     value={nominalVoltageV}
@@ -942,33 +1047,38 @@ export function EquipmentFormModal({
                 </div>
                 <div>
                   <label className="block text-xs text-slate-600 mb-1">
-                    Min Operating Voltage (V)
+                    {getCategoryFieldLabel('BATTERY', 'minBatteryVoltageV', lang)} (V)
                   </label>
                   <input
+                    dir="ltr"
                     type="number"
                     step="any"
                     value={minBatteryVoltageV}
                     onChange={(e) => setMinBatteryVoltageV(e.target.value)}
-                    placeholder="e.g. 44.5"
+                    placeholder="44.5"
                     className="w-full px-3 py-2 text-sm font-mono tabular-nums border border-slate-300 rounded-md"
                   />
                 </div>
                 <div>
                   <label className="block text-xs text-slate-600 mb-1">
-                    Max Operating Voltage (V)
+                    {getCategoryFieldLabel('BATTERY', 'maxBatteryVoltageV', lang)} (V)
                   </label>
                   <input
+                    dir="ltr"
                     type="number"
                     step="any"
                     value={maxBatteryVoltageV}
                     onChange={(e) => setMaxBatteryVoltageV(e.target.value)}
-                    placeholder="e.g. 53.5"
+                    placeholder="53.5"
                     className="w-full px-3 py-2 text-sm font-mono tabular-nums border border-slate-300 rounded-md"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-slate-600 mb-1">Max Power (W, optional)</label>
+                  <label className="block text-xs text-slate-600 mb-1">
+                    {getCategoryFieldLabel('BATTERY', 'ratedPowerW', lang)} (W)
+                  </label>
                   <input
+                    dir="ltr"
                     type="number"
                     step="any"
                     value={ratedPowerW}
@@ -984,9 +1094,10 @@ export function EquipmentFormModal({
             {mode === 'INSTALLED' && (
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1">
-                  Observed Serial Number (Optional)
+                  {t.modal.serialLabel}
                 </label>
                 <input
+                  dir="ltr"
                   type="text"
                   value={serialNumber}
                   onChange={(e) => setSerialNumber(e.target.value)}
@@ -996,7 +1107,7 @@ export function EquipmentFormModal({
             )}
             <div className={mode === 'INSTALLED' ? '' : 'sm:col-span-2'}>
               <label className="block text-xs font-medium text-slate-700 mb-1">
-                Technical Notes / Additional Markings
+                {t.modal.notesLabel}
               </label>
               <input
                 type="text"
@@ -1017,13 +1128,14 @@ export function EquipmentFormModal({
                 type="checkbox"
                 checked={!isSimulatedRecord && verifiedByUser}
                 disabled={isSimulatedRecord}
-                onChange={(e) => setVerifiedByUser(e.target.checked)}
+                onChange={(e) => {
+                  setVerifiedByUser(e.target.checked);
+                  setUserConfirmedVerifyAfterEdit(e.target.checked);
+                }}
                 className="w-4 h-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900 disabled:opacity-50"
               />
               <span>
-                {isSimulatedRecord
-                  ? 'Verification disabled for simulated/demo data'
-                  : 'Confirmed against genuine source document or physical nameplate (USER_VERIFIED)'}
+                {isSimulatedRecord ? t.modal.verifyDisabledSim : t.modal.verifyCheckboxLabel}
               </span>
             </label>
 
@@ -1033,14 +1145,14 @@ export function EquipmentFormModal({
                 onClick={onClose}
                 className="px-4 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50 whitespace-nowrap"
               >
-                Cancel
+                {t.common.cancel}
               </button>
               <button
                 type="submit"
                 className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-md hover:bg-slate-800 whitespace-nowrap"
               >
                 <Check className="w-3.5 h-3.5" />
-                Save Equipment Record
+                {t.modal.saveBtn}
               </button>
             </div>
           </div>

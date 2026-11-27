@@ -13,12 +13,14 @@ import {
 } from 'lucide-react';
 import { DEMO_QUOTATION_TEXT } from '../data/demoProject';
 import {
-  CATEGORY_LABELS,
   detectSimulatedMarkers,
   formatProvenance,
+  getCategoryLabel,
   projectContainsSimulatedData,
   resolveEquipmentProvenance,
 } from '../engine/engineeringEngine';
+import { useI18n } from '../i18n/I18nContext';
+import { fmt, type Language } from '../i18n/translations';
 import type {
   AppSection,
   DataProvenance,
@@ -32,15 +34,34 @@ import {
   CATEGORY_FIELD_DEFINITIONS,
   createOriginalAiSnapshot,
   filterUnreadableFieldsByCategory,
+  getCategoryFieldLabel,
   getMissingCategoryFields,
   sanitizeSpecFieldsByCategory,
 } from '../utils/categorySpecs';
+import {
+  planEquipmentExtractionMerge,
+  resolveConflictFillMissingOnly,
+  resolveConflictKeepExisting,
+  resolveConflictReplaceWithProposed,
+  type ExtractionConflict,
+} from '../utils/equipmentProtection';
 import { EquipmentFormModal } from './EquipmentFormModal';
 
 interface InspectionWorkflowViewProps {
   project: SolarProject;
   onUpdateProject: (updated: SolarProject) => void;
   onNavigate: (section: AppSection) => void;
+}
+
+function localizeUnreadableLabel(category: EquipmentCategory, raw: string, lang: Language): string {
+  const norm = raw.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const match = CATEGORY_FIELD_DEFINITIONS[category].find(
+    (d) =>
+      d.key.toLowerCase() === norm ||
+      d.label.toLowerCase().replace(/[^a-z0-9]/g, '') === norm ||
+      d.aliases.some((a) => a.replace(/[^a-z0-9]/g, '') === norm),
+  );
+  return match ? getCategoryFieldLabel(category, match.key, lang) : raw;
 }
 
 function fileToBase64(file: File): Promise<{ base64: string; dataUrl: string }> {
@@ -59,12 +80,15 @@ function fileToBase64(file: File): Promise<{ base64: string; dataUrl: string }> 
   });
 }
 
-async function assetPathToBase64(url: string): Promise<{ base64: string; mimeType: string }> {
+async function assetPathToBase64(
+  url: string,
+  unexpectedImgErrorMsg: string,
+): Promise<{ base64: string; mimeType: string }> {
   const response = await fetch(url);
-  if (!response.ok) throw new Error('Could not load sample nameplate image.');
+  if (!response.ok) throw new Error(unexpectedImgErrorMsg);
   const blob = await response.blob();
   if (!blob.type.startsWith('image/')) {
-    throw new Error('Sample nameplate image failed to load (unexpected non-image response).');
+    throw new Error(unexpectedImgErrorMsg);
   }
   const mimeType = blob.type || 'image/jpeg';
   return new Promise((resolve, reject) => {
@@ -77,7 +101,7 @@ async function assetPathToBase64(url: string): Promise<{ base64: string; mimeTyp
         mimeType,
       });
     };
-    reader.onerror = () => reject(new Error('Failed to encode sample image.'));
+    reader.onerror = () => reject(new Error(unexpectedImgErrorMsg));
     reader.readAsDataURL(blob);
   });
 }
@@ -87,17 +111,21 @@ export function InspectionWorkflowView({
   onUpdateProject,
   onNavigate,
 }: InspectionWorkflowViewProps) {
+  const { lang, tr: t } = useI18n();
   const [quotationText, setQuotationText] = useState(project.quotationRawText ?? '');
   const [quotationFile, setQuotationFile] = useState<File | null>(null);
   const [quoteLoading, setQuoteLoading] = useState(false);
   const [quoteError, setQuoteError] = useState<string | null>(null);
   const [quoteWarnings, setQuoteWarnings] = useState<string[]>([]);
+  const [quoteNotice, setQuoteNotice] = useState<string | null>(null);
+  const [pendingQuoteConflicts, setPendingQuoteConflicts] = useState<ExtractionConflict[]>([]);
 
   const [nameplateCategoryHint, setNameplateCategoryHint] = useState<EquipmentCategory>('PV_MODULE');
   const [nameplateQty, setNameplateQty] = useState('16');
   const [nameplateLoading, setNameplateLoading] = useState(false);
   const [nameplateError, setNameplateError] = useState<string | null>(null);
   const [nameplateNote, setNameplateNote] = useState<string | null>(null);
+  const [pendingNameplateConflicts, setPendingNameplateConflicts] = useState<ExtractionConflict[]>([]);
   const [expandedOriginalAiIds, setExpandedOriginalAiIds] = useState<Record<string, boolean>>({});
 
   const [editingModal, setEditingModal] = useState<{
@@ -119,6 +147,7 @@ export function InspectionWorkflowView({
     setQuoteLoading(true);
     setQuoteError(null);
     setQuoteWarnings([]);
+    setQuoteNotice(null);
     try {
       let base64Data: string | undefined;
       let mimeType: string | undefined;
@@ -145,10 +174,7 @@ export function InspectionWorkflowView({
         }),
       });
       if (!result.ok || !result.data) {
-        setQuoteError(
-          result.error ??
-            'AI quotation extraction unavailable. Use "Add Promised Equipment Manually" below.',
-        );
+        setQuoteError(result.error ?? t.inspection.quoteUnavailableErr);
         return;
       }
       const data = result.data;
@@ -194,7 +220,7 @@ export function InspectionWorkflowView({
           provenance: 'AI_EXTRACTED',
           uncertainFields: Array.isArray(it.uncertainFields)
             ? (it.uncertainFields as string[])
-            : ['Review AI extraction before confirming'],
+            : [],
           unreadableFields: Array.isArray(it.unreadableFields)
             ? (it.unreadableFields as string[])
             : [],
@@ -203,25 +229,38 @@ export function InspectionWorkflowView({
         }));
 
       if (mapped.length === 0) {
-        setQuoteWarnings((prev) => [
-          ...prev,
-          'No structured solar equipment items were recognized. Add promised equipment manually.',
-        ]);
+        setQuoteWarnings((prev) => [...prev, t.inspection.quoteNoItemsWarn]);
       } else {
+        const mergePlan = planEquipmentExtractionMerge(
+          project.promisedEquipment,
+          mapped,
+          project.isDemo,
+        );
+        setPendingQuoteConflicts(mergePlan.conflicts);
         onUpdateProject({
           ...project,
           quotationFileName: fileName,
           quotationRawText: quotationText,
-          promisedEquipment: mapped,
+          promisedEquipment: mergePlan.nextEquipment,
           updatedAt: new Date().toISOString(),
         });
+        if (mergePlan.conflicts.length > 0) {
+          const protectedNames = mergePlan.conflicts
+            .map((c) => getCategoryLabel(c.category, lang))
+            .join(' · ');
+          setQuoteNotice(
+            fmt(t.inspection.quoteProtectedNotice, { categories: protectedNames }),
+          );
+        } else {
+          setQuoteNotice(
+            fmt(t.inspection.quoteExtractedNotice, {
+              count: mergePlan.autoAppliedCategories.length,
+            }),
+          );
+        }
       }
     } catch (err) {
-      setQuoteError(
-        err instanceof Error
-          ? err.message
-          : 'Network error during quotation extraction. Use manual entry below.',
-      );
+      setQuoteError(err instanceof Error ? err.message : t.inspection.quoteNetworkErr);
     } finally {
       setQuoteLoading(false);
     }
@@ -272,10 +311,7 @@ export function InspectionWorkflowView({
         }),
       });
       if (!result.ok || !result.data) {
-        setNameplateError(
-          result.error ??
-            'AI Vision extraction failed. Click "Add Nameplate Manually" to enter label specs.',
-        );
+        setNameplateError(result.error ?? t.inspection.nameplateVisionErr);
         return;
       }
       const data = result.data;
@@ -345,20 +381,37 @@ export function InspectionWorkflowView({
         verifiedByUser: false,
       };
 
-      const filtered = project.installedEquipment.filter((e) => e.category !== detectedCategory);
-      onUpdateProject({
-        ...project,
-        installedEquipment: [...filtered, newSpec],
-        updatedAt: new Date().toISOString(),
-      });
-      setNameplateNote(
-        (sanitized.confidenceNotes as string | undefined) ??
-          'Nameplate label read. Original AI output preserved — please review and confirm.',
+      const mergePlan = planEquipmentExtractionMerge(
+        project.installedEquipment,
+        [newSpec],
+        project.isDemo,
       );
+
+      if (mergePlan.conflicts.length > 0) {
+        setPendingNameplateConflicts((prev) => [
+          ...prev.filter((c) => c.category !== detectedCategory),
+          ...mergePlan.conflicts,
+        ]);
+        setNameplateNote(
+          fmt(t.inspection.nameplateProtectedNotice, {
+            category: getCategoryLabel(detectedCategory, lang),
+          }),
+        );
+      } else {
+        setPendingNameplateConflicts((prev) =>
+          prev.filter((c) => c.category !== detectedCategory),
+        );
+        onUpdateProject({
+          ...project,
+          installedEquipment: mergePlan.nextEquipment,
+          updatedAt: new Date().toISOString(),
+        });
+        setNameplateNote(
+          (sanitized.confidenceNotes as string | undefined) ?? t.inspection.nameplateReadSuccess,
+        );
+      }
     } catch (err) {
-      setNameplateError(
-        err instanceof Error ? err.message : 'Unable to process nameplate photograph.',
-      );
+      setNameplateError(err instanceof Error ? err.message : t.inspection.nameplateProcessErr);
     } finally {
       setNameplateLoading(false);
     }
@@ -377,7 +430,7 @@ export function InspectionWorkflowView({
         nameplateCategoryHint,
       );
     } catch (err) {
-      setNameplateError(err instanceof Error ? err.message : 'Failed to read image file.');
+      setNameplateError(err instanceof Error ? err.message : t.inspection.fileReadErr);
     } finally {
       e.target.value = '';
     }
@@ -389,10 +442,10 @@ export function InspectionWorkflowView({
     cat: EquipmentCategory,
   ) => {
     try {
-      const { base64, mimeType } = await assetPathToBase64(assetUrl);
+      const { base64, mimeType } = await assetPathToBase64(assetUrl, t.inspection.sampleImgErr);
       await runNameplateVision(fileName, mimeType, base64, assetUrl, cat);
     } catch (err) {
-      setNameplateError(err instanceof Error ? err.message : 'Failed to load sample image.');
+      setNameplateError(err instanceof Error ? err.message : t.inspection.sampleLoadErr);
     }
   };
 
@@ -400,8 +453,11 @@ export function InspectionWorkflowView({
     if (mode === 'PROMISED') {
       const exists = project.promisedEquipment.some((e) => e.id === spec.id);
       const next = exists
-        ? project.promisedEquipment.map((e) => (e.id === spec.id ? spec : e))
+        ? project.promisedEquipment
+            .filter((e) => e.id === spec.id || e.category !== spec.category)
+            .map((e) => (e.id === spec.id ? spec : e))
         : [...project.promisedEquipment.filter((e) => e.category !== spec.category), spec];
+      setPendingQuoteConflicts((prev) => prev.filter((c) => c.category !== spec.category));
       onUpdateProject({
         ...project,
         promisedEquipment: next,
@@ -410,8 +466,11 @@ export function InspectionWorkflowView({
     } else {
       const exists = project.installedEquipment.some((e) => e.id === spec.id);
       const next = exists
-        ? project.installedEquipment.map((e) => (e.id === spec.id ? spec : e))
+        ? project.installedEquipment
+            .filter((e) => e.id === spec.id || e.category !== spec.category)
+            .map((e) => (e.id === spec.id ? spec : e))
         : [...project.installedEquipment.filter((e) => e.category !== spec.category), spec];
+      setPendingNameplateConflicts((prev) => prev.filter((c) => c.category !== spec.category));
       onUpdateProject({
         ...project,
         installedEquipment: next,
@@ -421,14 +480,57 @@ export function InspectionWorkflowView({
     setEditingModal(null);
   };
 
+  const handleResolveConflict = (
+    mode: 'PROMISED' | 'INSTALLED',
+    conflict: ExtractionConflict,
+    action: 'KEEP' | 'FILL_MISSING' | 'REPLACE',
+  ) => {
+    const currentList =
+      mode === 'PROMISED' ? project.promisedEquipment : project.installedEquipment;
+    const nextList =
+      action === 'KEEP'
+        ? resolveConflictKeepExisting(currentList, conflict)
+        : action === 'FILL_MISSING'
+          ? resolveConflictFillMissingOnly(currentList, conflict, project.isDemo)
+          : resolveConflictReplaceWithProposed(currentList, conflict);
+
+    if (mode === 'PROMISED') {
+      setPendingQuoteConflicts((prev) => prev.filter((c) => c.category !== conflict.category));
+      if (action !== 'KEEP') {
+        onUpdateProject({
+          ...project,
+          promisedEquipment: nextList,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    } else {
+      setPendingNameplateConflicts((prev) => prev.filter((c) => c.category !== conflict.category));
+      if (action !== 'KEEP') {
+        onUpdateProject({
+          ...project,
+          installedEquipment: nextList,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    }
+  };
+
   const handleDeleteEquipment = (mode: 'PROMISED' | 'INSTALLED', id: string) => {
     if (mode === 'PROMISED') {
+      const target = project.promisedEquipment.find((e) => e.id === id);
+      if (target) {
+        setPendingQuoteConflicts((prev) => prev.filter((c) => c.category !== target.category));
+      }
       onUpdateProject({
         ...project,
         promisedEquipment: project.promisedEquipment.filter((e) => e.id !== id),
         updatedAt: new Date().toISOString(),
       });
     } else {
+      const target = project.installedEquipment.find((e) => e.id === id);
+      if (target) {
+        setPendingNameplateConflicts((prev) => prev.filter((c) => c.category !== target.category));
+      }
       onUpdateProject({
         ...project,
         installedEquipment: project.installedEquipment.filter((e) => e.id !== id),
@@ -443,25 +545,26 @@ export function InspectionWorkflowView({
       <div className="bg-white border border-slate-200 rounded-lg p-6">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-4 border-b border-slate-200">
           <div>
-            <h2 className="text-base font-semibold text-slate-900">
-              Step 1 — Active Project Details
-            </h2>
+            <h2 className="text-base font-semibold text-slate-900">{t.inspection.step1Title}</h2>
             <p className="text-xs text-slate-500">
-              Project ID: <span className="font-mono font-semibold text-slate-700">{project.id}</span>
+              {t.inspection.projectIdPrefix}{' '}
+              <span dir="ltr" className="font-mono font-semibold text-slate-700 inline-block">
+                {project.id}
+              </span>
             </p>
           </div>
           {(project.isDemo || projectContainsSimulatedData(project)) && (
             <span className="text-xs font-semibold text-amber-800 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded">
-              {project.isDemo
-                ? 'Simulated Demonstration Project'
-                : 'Contains Simulated / Prototype Data'}
+              {project.isDemo ? t.inspection.demoTag : t.inspection.simDataTag}
             </span>
           )}
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-4">
           <div>
-            <label className="block text-xs font-medium text-slate-700 mb-1">Customer Name</label>
+            <label className="block text-xs font-medium text-slate-700 mb-1">
+              {t.inspection.customerName}
+            </label>
             <input
               type="text"
               value={project.customerName}
@@ -470,7 +573,9 @@ export function InspectionWorkflowView({
             />
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-700 mb-1">Location</label>
+            <label className="block text-xs font-medium text-slate-700 mb-1">
+              {t.inspection.location}
+            </label>
             <input
               type="text"
               value={project.location}
@@ -480,9 +585,10 @@ export function InspectionWorkflowView({
           </div>
           <div>
             <label className="block text-xs font-medium text-slate-700 mb-1">
-              Installation Date
+              {t.inspection.installDate}
             </label>
             <input
+              dir="ltr"
               type="date"
               value={project.installationDate}
               onChange={(e) => handleMetaUpdate({ installationDate: e.target.value })}
@@ -490,15 +596,19 @@ export function InspectionWorkflowView({
             />
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-700 mb-1">System Type</label>
+            <label className="block text-xs font-medium text-slate-700 mb-1">
+              {t.inspection.systemType}
+            </label>
             <select
               value={project.systemType}
               onChange={(e) => handleMetaUpdate({ systemType: e.target.value as SystemType })}
               className="w-full px-3 py-2 text-sm border border-slate-300 rounded-md bg-white"
             >
-              <option value="Hybrid (PV + Battery)">Hybrid (PV + Battery)</option>
-              <option value="Grid-Tied">Grid-Tied</option>
-              <option value="Off-Grid">Off-Grid</option>
+              <option value="Hybrid (PV + Battery)">
+                {t.systemTypes['Hybrid (PV + Battery)']}
+              </option>
+              <option value="Grid-Tied">{t.systemTypes['Grid-Tied']}</option>
+              <option value="Off-Grid">{t.systemTypes['Off-Grid']}</option>
             </select>
           </div>
         </div>
@@ -508,13 +618,8 @@ export function InspectionWorkflowView({
       <div className="bg-white border border-slate-200 rounded-lg p-6 space-y-5">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-200">
           <div>
-            <h2 className="text-base font-semibold text-slate-900">
-              Step 2 — Contractual Quotation Analysis (Promised Equipment)
-            </h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Upload a quotation PDF/document or paste quotation text for Gemini extraction, then
-              review and confirm every specification.
-            </p>
+            <h2 className="text-base font-semibold text-slate-900">{t.inspection.step2Title}</h2>
+            <p className="text-xs text-slate-500 mt-0.5">{t.inspection.step2Subtitle}</p>
           </div>
           <button
             type="button"
@@ -522,26 +627,26 @@ export function InspectionWorkflowView({
             className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-800 bg-white border border-slate-300 rounded-md hover:bg-slate-50 whitespace-nowrap shrink-0"
           >
             <Plus className="w-3.5 h-3.5" />
-            Add Promised Equipment Manually
+            {t.inspection.addPromisedManual}
           </button>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
           <div className="space-y-3">
             <label className="block text-xs font-medium text-slate-700">
-              Upload Quotation Document (PDF, Image, TXT, CSV)
+              {t.inspection.uploadQuoteLabel}
             </label>
             <div className="border border-dashed border-slate-300 rounded-md p-4 bg-slate-50 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
               <div className="text-xs text-slate-600">
                 {quotationFile
-                  ? `Selected: ${quotationFile.name}`
+                  ? fmt(t.inspection.selectedFile, { name: quotationFile.name })
                   : project.quotationFileName
-                    ? `Current file: ${project.quotationFileName}`
-                    : 'No file selected'}
+                    ? fmt(t.inspection.currentFile, { name: project.quotationFileName })
+                    : t.inspection.noFileSelected}
               </div>
               <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-900 bg-white border border-slate-300 rounded-md hover:bg-slate-100 cursor-pointer whitespace-nowrap shrink-0">
                 <FileUp className="w-3.5 h-3.5" />
-                Choose File
+                {t.inspection.chooseFile}
                 <input
                   type="file"
                   accept=".pdf,.txt,.csv,image/png,image/jpeg,image/webp"
@@ -559,27 +664,28 @@ export function InspectionWorkflowView({
                 className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-md hover:bg-slate-800 disabled:opacity-50 whitespace-nowrap"
               >
                 {quoteLoading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                {quoteLoading ? 'Analyzing Quotation...' : 'Extract Promised Specs with Gemini'}
+                {quoteLoading ? t.inspection.analyzingQuote : t.inspection.extractQuoteBtn}
               </button>
               <button
                 type="button"
                 onClick={() => setQuotationText(DEMO_QUOTATION_TEXT)}
                 className="px-3 py-2 text-xs font-medium text-slate-700 border border-slate-300 rounded-md hover:bg-slate-50 whitespace-nowrap"
               >
-                Insert Sample Quotation Text
+                {t.inspection.insertSampleQuote}
               </button>
             </div>
           </div>
 
           <div>
             <label className="block text-xs font-medium text-slate-700 mb-1.5">
-              Quotation Text / Line Items (Optional or Paste)
+              {t.inspection.quoteTextLabel}
             </label>
             <textarea
+              dir="ltr"
               rows={5}
               value={quotationText}
               onChange={(e) => setQuotationText(e.target.value)}
-              placeholder="Paste quotation equipment schedule or bill of materials..."
+              placeholder={t.inspection.quoteTextPlaceholder}
               className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-900"
             />
           </div>
@@ -591,33 +697,113 @@ export function InspectionWorkflowView({
           </div>
         )}
 
+        {quoteNotice && (
+          <div className="bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs px-3 py-2.5 rounded-md">
+            {quoteNotice}
+          </div>
+        )}
+
         {quoteWarnings.length > 0 && (
           <div className="bg-amber-50 border border-amber-200 text-amber-900 text-xs px-3 py-2.5 rounded-md space-y-1">
-            <div className="font-semibold">Extraction Uncertainty Notes:</div>
+            <div className="font-semibold">{t.inspection.extractionUncertaintyTitle}</div>
             {quoteWarnings.map((w, idx) => (
               <div key={idx}>· {w}</div>
             ))}
           </div>
         )}
 
+        {pendingQuoteConflicts.length > 0 && (
+          <div className="bg-amber-50 border border-amber-300 rounded-md p-4 space-y-3 text-xs">
+            <div className="flex items-start gap-2 text-amber-950">
+              <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+              <div>
+                <div className="font-semibold">{t.inspection.verifiedQuoteProtectedTitle}</div>
+                <p className="text-amber-900 mt-0.5">{t.inspection.verifiedQuoteProtectedBody}</p>
+              </div>
+            </div>
+            {pendingQuoteConflicts.map((conflict) => {
+              const existingProv = resolveEquipmentProvenance(conflict.existing, project.isDemo);
+              return (
+                <div
+                  key={conflict.category}
+                  className="bg-white border border-amber-200 rounded-md p-3 space-y-2"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-semibold text-slate-900">
+                      {getCategoryLabel(conflict.category, lang)} ({t.provenanceShort[existingProv]})
+                    </span>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleResolveConflict('PROMISED', conflict, 'KEEP')}
+                        className="px-2.5 py-1 text-[11px] font-semibold text-slate-800 bg-slate-100 border border-slate-300 rounded hover:bg-slate-200"
+                      >
+                        {t.inspection.keepVerifiedBtn}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleResolveConflict('PROMISED', conflict, 'FILL_MISSING')}
+                        className="px-2.5 py-1 text-[11px] font-semibold text-emerald-900 bg-emerald-50 border border-emerald-300 rounded hover:bg-emerald-100"
+                      >
+                        {t.inspection.fillMissingBtn}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleResolveConflict('PROMISED', conflict, 'REPLACE')}
+                        className="px-2.5 py-1 text-[11px] font-semibold text-amber-950 bg-amber-100 border border-amber-300 rounded hover:bg-amber-200"
+                      >
+                        {t.inspection.replaceWithAiBtn}
+                      </button>
+                    </div>
+                  </div>
+                  {conflict.changedFields.length === 0 ? (
+                    <p className="text-[11px] text-slate-600">{t.inspection.conflictMatchQuote}</p>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-[11px]">
+                      {conflict.changedFields.slice(0, 6).map((diff) => (
+                        <div
+                          key={diff.key}
+                          className="bg-slate-50 border border-slate-200 rounded px-2 py-1"
+                        >
+                          <div className="font-medium text-slate-700">
+                            {diff.key === 'quantity'
+                              ? t.modal.quantityLabel
+                              : getCategoryFieldLabel(conflict.category, diff.key, lang)}
+                          </div>
+                          <div className="font-mono text-slate-600 truncate">
+                            {fmt(t.inspection.conflictVerifiedVsAi, {
+                              existing: diff.existingValue,
+                              proposed: diff.proposedValue,
+                            })}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
         {/* Promised Equipment List */}
         <div className="overflow-x-auto border border-slate-200 rounded-md">
-          <table className="w-full text-left border-collapse">
+          <table className="w-full text-start border-collapse">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600">
-                <th className="py-2.5 px-3">Category</th>
-                <th className="py-2.5 px-3">Manufacturer & Model</th>
-                <th className="py-2.5 px-3">Qty</th>
-                <th className="py-2.5 px-3">Key Ratings</th>
-                <th className="py-2.5 px-3">Verification</th>
-                <th className="py-2.5 px-3 text-right">Actions</th>
+                <th className="py-2.5 px-3 text-start">{t.inspection.colCategory}</th>
+                <th className="py-2.5 px-3 text-start">{t.inspection.colMfgModel}</th>
+                <th className="py-2.5 px-3 text-start">{t.inspection.colQty}</th>
+                <th className="py-2.5 px-3 text-start">{t.inspection.colKeyRatings}</th>
+                <th className="py-2.5 px-3 text-start">{t.inspection.colVerification}</th>
+                <th className="py-2.5 px-3 text-end">{t.inspection.colActions}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 text-xs">
               {project.promisedEquipment.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="py-6 text-center text-slate-500">
-                    No promised equipment recorded yet. Extract a quotation or add items manually.
+                    {t.inspection.noPromisedEmpty}
                   </td>
                 </tr>
               ) : (
@@ -627,26 +813,34 @@ export function InspectionWorkflowView({
                   return (
                     <tr key={eq.id}>
                       <td className="py-2.5 px-3 font-medium text-slate-900 whitespace-nowrap">
-                        {CATEGORY_LABELS[eq.category]}
+                        {getCategoryLabel(eq.category, lang)}
                       </td>
                       <td className="py-2.5 px-3">
                         <div className="font-medium text-slate-900">
-                          {eq.manufacturer ?? 'Missing Mfg'} ·{' '}
-                          <span className="font-mono">{eq.model ?? 'Missing Model'}</span>
+                          <span dir="ltr" className="inline-block">
+                            {eq.manufacturer ?? t.inspection.missingMfg}
+                          </span>{' '}
+                          ·{' '}
+                          <span dir="ltr" className="font-mono inline-block">
+                            {eq.model ?? t.inspection.missingModel}
+                          </span>
                         </div>
                         <div className="text-[11px] text-slate-500">
-                          {formatProvenance(prov)}
+                          {formatProvenance(prov, lang)}
                         </div>
                         {simReasons.length > 0 && (
                           <div className="text-[10px] text-amber-800 font-medium mt-0.5">
-                            Warning: {simReasons[0]}
+                            {t.inspection.warningPrefix} {simReasons[0]}
                           </div>
                         )}
                       </td>
-                      <td className="py-2.5 px-3 font-mono tabular-nums">
+                      <td dir="ltr" className="py-2.5 px-3 font-mono tabular-nums text-start">
                         {eq.quantity ?? '—'}
                       </td>
-                      <td className="py-2.5 px-3 font-mono tabular-nums text-slate-700">
+                      <td
+                        dir="ltr"
+                        className="py-2.5 px-3 font-mono tabular-nums text-slate-700 text-start"
+                      >
                         {[
                           eq.ratedPowerW !== null ? `${eq.ratedPowerW}W` : null,
                           eq.capacityKwh !== null ? `${eq.capacityKwh}kWh` : null,
@@ -654,36 +848,36 @@ export function InspectionWorkflowView({
                           eq.maxPvInputVoltageV !== null ? `MaxPV:${eq.maxPvInputVoltageV}V` : null,
                         ]
                           .filter(Boolean)
-                          .join(' · ') || 'Incomplete'}
+                          .join(' · ') || t.common.incomplete}
                       </td>
                       <td className="py-2.5 px-3 whitespace-nowrap">
                         {prov === 'SIMULATED' ? (
                           <span className="inline-flex items-center gap-1 text-amber-800 font-semibold">
-                            <AlertTriangle className="w-3.5 h-3.5" /> SIMULATED
+                            <AlertTriangle className="w-3.5 h-3.5" /> {t.provenanceShort.SIMULATED}
                           </span>
                         ) : prov === 'USER_VERIFIED' || prov === 'DATASHEET_VERIFIED' ? (
                           <span className="inline-flex items-center gap-1 text-emerald-700 font-medium">
-                            <CheckCircle2 className="w-3.5 h-3.5" /> {prov}
+                            <CheckCircle2 className="w-3.5 h-3.5" /> {t.provenanceShort[prov]}
                           </span>
                         ) : (
                           <span className="inline-flex items-center gap-1 text-amber-700 font-medium">
-                            <AlertTriangle className="w-3.5 h-3.5" /> {prov}
+                            <AlertTriangle className="w-3.5 h-3.5" /> {t.provenanceShort[prov]}
                           </span>
                         )}
                       </td>
-                      <td className="py-2.5 px-3 text-right whitespace-nowrap">
+                      <td className="py-2.5 px-3 text-end whitespace-nowrap">
                         <button
                           type="button"
                           onClick={() => setEditingModal({ mode: 'PROMISED', spec: eq })}
-                          className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-700 border border-slate-300 rounded hover:bg-slate-50 mr-1.5"
+                          className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-700 border border-slate-300 rounded hover:bg-slate-50 me-1.5"
                         >
-                          <Edit3 className="w-3 h-3" /> Edit
+                          <Edit3 className="w-3 h-3" /> {t.common.edit}
                         </button>
                         <button
                           type="button"
                           onClick={() => handleDeleteEquipment('PROMISED', eq.id)}
                           className="p-1 text-slate-400 hover:text-red-700"
-                          aria-label="Remove promised item"
+                          aria-label={t.inspection.removePromisedAria}
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
@@ -701,13 +895,8 @@ export function InspectionWorkflowView({
       <div className="bg-white border border-slate-200 rounded-lg p-6 space-y-5">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-200">
           <div>
-            <h2 className="text-base font-semibold text-slate-900">
-              Step 3 — Installed Equipment Nameplate Verification (Site Evidence)
-            </h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Upload nameplate photographs for Gemini Vision label OCR. Equipment is identified
-              strictly from printed label text, never physical appearance.
-            </p>
+            <h2 className="text-base font-semibold text-slate-900">{t.inspection.step3Title}</h2>
+            <p className="text-xs text-slate-500 mt-0.5">{t.inspection.step3Subtitle}</p>
           </div>
           <button
             type="button"
@@ -715,7 +904,7 @@ export function InspectionWorkflowView({
             className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-800 bg-white border border-slate-300 rounded-md hover:bg-slate-50 whitespace-nowrap shrink-0"
           >
             <Plus className="w-3.5 h-3.5" />
-            Add Nameplate Manually
+            {t.inspection.addNameplateManual}
           </button>
         </div>
 
@@ -723,7 +912,7 @@ export function InspectionWorkflowView({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 flex-1">
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1">
-                Equipment Category
+                {t.inspection.equipCategoryLabel}
               </label>
               <select
                 value={nameplateCategoryHint}
@@ -736,16 +925,17 @@ export function InspectionWorkflowView({
                 }}
                 className="w-full px-3 py-2 text-xs border border-slate-300 rounded-md bg-white"
               >
-                <option value="PV_MODULE">Solar PV Module Nameplate</option>
-                <option value="INVERTER">Inverter Rating Plate</option>
-                <option value="BATTERY">Battery Module Label</option>
+                <option value="PV_MODULE">{t.inspection.pvNameplateOpt}</option>
+                <option value="INVERTER">{t.inspection.invNameplateOpt}</option>
+                <option value="BATTERY">{t.inspection.battNameplateOpt}</option>
               </select>
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1">
-                Observed Physical Unit Count
+                {t.inspection.observedCountLabel}
               </label>
               <input
+                dir="ltr"
                 type="number"
                 min="1"
                 value={nameplateQty}
@@ -762,7 +952,7 @@ export function InspectionWorkflowView({
               ) : (
                 <Camera className="w-3.5 h-3.5" />
               )}
-              {nameplateLoading ? 'Reading Nameplate...' : 'Upload Nameplate Photo (AI Vision)'}
+              {nameplateLoading ? t.inspection.readingNameplate : t.inspection.uploadNameplateBtn}
               <input
                 type="file"
                 accept="image/jpeg,image/png,image/webp"
@@ -795,7 +985,9 @@ export function InspectionWorkflowView({
               }}
               className="px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-100 whitespace-nowrap"
             >
-              Test AI on Sample {CATEGORY_LABELS[nameplateCategoryHint]} Label
+              {fmt(t.inspection.testAiSampleBtn, {
+                category: getCategoryLabel(nameplateCategoryHint, lang),
+              })}
             </button>
           </div>
         </div>
@@ -811,11 +1003,92 @@ export function InspectionWorkflowView({
           </div>
         )}
 
+        {pendingNameplateConflicts.length > 0 && (
+          <div className="bg-amber-50 border border-amber-300 rounded-md p-4 space-y-3 text-xs">
+            <div className="flex items-start gap-2 text-amber-950">
+              <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+              <div>
+                <div className="font-semibold">
+                  {t.inspection.verifiedNameplateProtectedTitle}
+                </div>
+                <p className="text-amber-900 mt-0.5">
+                  {t.inspection.verifiedNameplateProtectedBody}
+                </p>
+              </div>
+            </div>
+            {pendingNameplateConflicts.map((conflict) => {
+              const existingProv = resolveEquipmentProvenance(conflict.existing, project.isDemo);
+              return (
+                <div
+                  key={conflict.category}
+                  className="bg-white border border-amber-200 rounded-md p-3 space-y-2"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-semibold text-slate-900">
+                      {getCategoryLabel(conflict.category, lang)} ({t.provenanceShort[existingProv]})
+                    </span>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleResolveConflict('INSTALLED', conflict, 'KEEP')}
+                        className="px-2.5 py-1 text-[11px] font-semibold text-slate-800 bg-slate-100 border border-slate-300 rounded hover:bg-slate-200"
+                      >
+                        {t.inspection.keepVerifiedBtn}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleResolveConflict('INSTALLED', conflict, 'FILL_MISSING')
+                        }
+                        className="px-2.5 py-1 text-[11px] font-semibold text-emerald-900 bg-emerald-50 border border-emerald-300 rounded hover:bg-emerald-100"
+                      >
+                        {t.inspection.fillMissingBtn}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleResolveConflict('INSTALLED', conflict, 'REPLACE')}
+                        className="px-2.5 py-1 text-[11px] font-semibold text-amber-950 bg-amber-100 border border-amber-300 rounded hover:bg-amber-200"
+                      >
+                        {t.inspection.replaceWithAiBtn}
+                      </button>
+                    </div>
+                  </div>
+                  {conflict.changedFields.length === 0 ? (
+                    <p className="text-[11px] text-slate-600">
+                      {t.inspection.conflictMatchNameplate}
+                    </p>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-[11px]">
+                      {conflict.changedFields.slice(0, 6).map((diff) => (
+                        <div
+                          key={diff.key}
+                          className="bg-slate-50 border border-slate-200 rounded px-2 py-1"
+                        >
+                          <div className="font-medium text-slate-700">
+                            {diff.key === 'quantity'
+                              ? t.modal.quantityLabel
+                              : getCategoryFieldLabel(conflict.category, diff.key, lang)}
+                          </div>
+                          <div className="font-mono text-slate-600 truncate">
+                            {fmt(t.inspection.conflictVerifiedVsAi, {
+                              existing: diff.existingValue,
+                              proposed: diff.proposedValue,
+                            })}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
         {/* Installed Equipment Cards */}
         {project.installedEquipment.length === 0 ? (
           <div className="border border-slate-200 rounded-md py-8 text-center text-xs text-slate-500">
-            No installed equipment nameplates recorded yet. Upload a nameplate photo or add specs
-            manually.
+            {t.inspection.noInstalledEmpty}
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -832,6 +1105,13 @@ export function InspectionWorkflowView({
               const isOriginalOpen = Boolean(expandedOriginalAiIds[eq.id]);
               const resolvedProv = resolveEquipmentProvenance(eq, project.isDemo);
               const simReasons = detectSimulatedMarkers(eq, project.isDemo);
+              const localizedMissingList = (
+                filteredUnreadable.length > 0
+                  ? filteredUnreadable.map((item) =>
+                      localizeUnreadableLabel(eq.category, item, lang),
+                    )
+                  : missingRequired.map((m) => getCategoryFieldLabel(eq.category, m.key, lang))
+              ).join(' · ');
 
               return (
                 <div
@@ -843,7 +1123,7 @@ export function InspectionWorkflowView({
                       <div className="aspect-[4/3] bg-slate-100 border-b border-slate-200 overflow-hidden">
                         <img
                           src={eq.sourceImagePreview}
-                          alt={`${CATEGORY_LABELS[eq.category]} nameplate`}
+                          alt={getCategoryLabel(eq.category, lang)}
                           referrerPolicy="no-referrer"
                           className="w-full h-full object-cover"
                         />
@@ -853,8 +1133,8 @@ export function InspectionWorkflowView({
                         <Camera className="w-6 h-6 text-slate-400 mb-1.5" />
                         <span className="text-xs font-medium text-slate-600">
                           {resolvedProv === 'SIMULATED'
-                            ? 'Simulated Equipment Record'
-                            : 'Manual Nameplate Entry'}
+                            ? t.inspection.simEquipCardLabel
+                            : t.inspection.manualEntryCardLabel}
                         </span>
                       </div>
                     )}
@@ -862,7 +1142,7 @@ export function InspectionWorkflowView({
                     <div className="p-4 space-y-2.5">
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-xs font-semibold text-slate-500">
-                          {CATEGORY_LABELS[eq.category]}
+                          {getCategoryLabel(eq.category, lang)}
                         </span>
                         <span
                           className={`text-[11px] font-mono font-semibold ${
@@ -874,7 +1154,7 @@ export function InspectionWorkflowView({
                                 : 'text-slate-700'
                           }`}
                         >
-                          {resolvedProv}
+                          {t.provenanceShort[resolvedProv]}
                         </span>
                       </div>
 
@@ -882,22 +1162,34 @@ export function InspectionWorkflowView({
                         <div className="bg-amber-50 border border-amber-300 rounded px-2.5 py-1.5 text-[11px] text-amber-950 flex items-start gap-1.5">
                           <AlertTriangle className="w-3.5 h-3.5 text-amber-700 shrink-0 mt-0.5" />
                           <span>
-                            <span className="font-semibold">Simulated Data Warning:</span>{' '}
-                            {simReasons.join('; ')}. Not verified real equipment.
+                            <span className="font-semibold">{t.inspection.simWarningTitle}</span>{' '}
+                            {simReasons.join('; ')}. {t.inspection.simWarningSuffix}
                           </span>
                         </div>
                       )}
 
                       <div>
                         <div className="text-sm font-semibold text-slate-900">
-                          {eq.manufacturer ?? 'Unknown Manufacturer'}
+                          <span dir="ltr" className="inline-block">
+                            {eq.manufacturer ?? t.inspection.unknownMfg}
+                          </span>
                         </div>
                         <div className="text-xs font-mono text-slate-700">
-                          Model: {eq.model ?? 'Not readable'} · Qty: {eq.quantity ?? '—'}
+                          {t.inspection.modelPrefix}{' '}
+                          <span dir="ltr" className="inline-block">
+                            {eq.model ?? t.common.notReadable}
+                          </span>{' '}
+                          · {t.inspection.qtyPrefix}{' '}
+                          <span dir="ltr" className="inline-block">
+                            {eq.quantity ?? '—'}
+                          </span>
                         </div>
                         {eq.serialNumber && (
                           <div className="text-[11px] font-mono text-slate-500">
-                            S/N: {eq.serialNumber}
+                            {t.inspection.snPrefix}{' '}
+                            <span dir="ltr" className="inline-block">
+                              {eq.serialNumber}
+                            </span>
                           </div>
                         )}
                       </div>
@@ -915,13 +1207,18 @@ export function InspectionWorkflowView({
                               key={def.key}
                               className="bg-slate-50 border border-slate-200 rounded px-2 py-1"
                             >
-                              <div className="text-[10px] text-slate-500 truncate">{def.label}</div>
+                              <div className="text-[10px] text-slate-500 truncate">
+                                {getCategoryFieldLabel(eq.category, def.key, lang)}
+                              </div>
                               <div
-                                className={`font-mono tabular-nums font-medium ${
+                                dir={hasVal ? 'ltr' : undefined}
+                                className={`font-mono tabular-nums font-medium text-start ${
                                   hasVal ? 'text-slate-900' : 'text-slate-400'
                                 }`}
                               >
-                                {hasVal ? `${val}${def.unit ? ` ${def.unit}` : ''}` : 'Missing'}
+                                {hasVal
+                                  ? `${val}${def.unit ? ` ${def.unit}` : ''}`
+                                  : t.common.missing}
                               </div>
                             </div>
                           );
@@ -930,15 +1227,19 @@ export function InspectionWorkflowView({
 
                       {eq.additionalSpecs && (
                         <div className="text-[11px] text-slate-600 bg-slate-50 border border-slate-200 rounded px-2 py-1.5">
-                          <span className="font-semibold text-slate-700">Other Specs:</span>{' '}
+                          <span className="font-semibold text-slate-700">
+                            {t.inspection.otherSpecsLabel}
+                          </span>{' '}
                           {eq.additionalSpecs}
                         </div>
                       )}
 
                       {eq.datasheetFileName && (
                         <div className="text-[11px] text-emerald-800 bg-emerald-50 border border-emerald-200 rounded px-2 py-1">
-                          <span className="font-semibold">Datasheet linked:</span>{' '}
-                          {eq.datasheetFileName}
+                          <span className="font-semibold">{t.inspection.datasheetLinkedLabel}</span>{' '}
+                          <span dir="ltr" className="inline-block font-mono">
+                            {eq.datasheetFileName}
+                          </span>
                         </div>
                       )}
 
@@ -946,15 +1247,14 @@ export function InspectionWorkflowView({
                         <div className="bg-amber-50 border border-amber-200 rounded p-2 text-[11px] text-amber-900 space-y-1">
                           <div>
                             <span className="font-semibold">
-                              Missing on {CATEGORY_LABELS[eq.category]} label:
+                              {fmt(t.inspection.missingOnLabel, {
+                                category: getCategoryLabel(eq.category, lang),
+                              })}
                             </span>{' '}
-                            {(filteredUnreadable.length > 0
-                              ? filteredUnreadable
-                              : missingRequired.map((m) => m.label)
-                            ).join(', ')}
+                            {localizedMissingList}
                           </div>
                           <div className="text-[10px] text-amber-800">
-                            Use Review & Correct for manual entry or Upload Datasheet below.
+                            {t.inspection.missingLabelHint}
                           </div>
                         </div>
                       )}
@@ -974,10 +1274,10 @@ export function InspectionWorkflowView({
                           >
                             <span className="inline-flex items-center gap-1">
                               <Eye className="w-3 h-3" />
-                              {isOriginalOpen ? 'Hide Original AI Read' : 'View Original AI Read'}
+                              {isOriginalOpen ? t.inspection.hideOrigAi : t.inspection.viewOrigAi}
                             </span>
                             <span className="text-[10px] font-normal text-slate-500">
-                              Preserved
+                              {t.common.preserved}
                             </span>
                           </button>
                           {isOriginalOpen && (
@@ -989,13 +1289,25 @@ export function InspectionWorkflowView({
                                     eq.originalAiExtraction!.fields[
                                       def.key as keyof typeof eq.originalAiExtraction.fields
                                     ];
+                                  const hasOrigVal =
+                                    origVal !== null && origVal !== undefined && origVal !== '';
                                   return (
                                     <div key={def.key} className="flex justify-between gap-2">
-                                      <span className="text-slate-500">{def.label}:</span>
-                                      <span className="font-mono text-slate-800 text-right">
-                                        {origVal !== null && origVal !== undefined && origVal !== ''
+                                      <span className="text-slate-500">
+                                        {getCategoryFieldLabel(
+                                          eq.originalAiExtraction!.category,
+                                          def.key,
+                                          lang,
+                                        )}
+                                        :
+                                      </span>
+                                      <span
+                                        dir={hasOrigVal ? 'ltr' : undefined}
+                                        className="font-mono text-slate-800 text-end"
+                                      >
+                                        {hasOrigVal
                                           ? `${origVal}${def.unit ? ` ${def.unit}` : ''}`
-                                          : 'Not readable'}
+                                          : t.common.notReadable}
                                       </span>
                                     </div>
                                   );
@@ -1015,7 +1327,7 @@ export function InspectionWorkflowView({
                         className="inline-flex items-center gap-1 text-xs font-semibold text-slate-800 hover:text-slate-950"
                       >
                         <Edit3 className="w-3.5 h-3.5" />
-                        Review & Correct
+                        {t.inspection.reviewCorrectBtn}
                       </button>
                       <button
                         type="button"
@@ -1029,14 +1341,14 @@ export function InspectionWorkflowView({
                         className="inline-flex items-center gap-1 text-xs font-medium text-slate-700 hover:text-slate-950"
                       >
                         <FileText className="w-3.5 h-3.5" />
-                        Datasheet
+                        {t.inspection.datasheetBtn}
                       </button>
                     </div>
                     <button
                       type="button"
                       onClick={() => handleDeleteEquipment('INSTALLED', eq.id)}
                       className="p-1 text-slate-400 hover:text-red-700"
-                      aria-label="Delete installed equipment"
+                      aria-label={t.inspection.deleteInstalledAria}
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -1053,7 +1365,7 @@ export function InspectionWorkflowView({
             onClick={() => onNavigate('comparison')}
             className="px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-md hover:bg-slate-800 whitespace-nowrap"
           >
-            Proceed to Step 4: Equipment Comparison
+            {t.inspection.proceedStep4}
           </button>
         </div>
       </div>

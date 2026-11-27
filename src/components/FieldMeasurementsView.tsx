@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ClipboardCheck, Plus, Trash2 } from 'lucide-react';
 import { runEngineeringValidation } from '../engine/engineeringEngine';
+import { useI18n } from '../i18n/I18nContext';
+import { fmt, TRANSLATIONS } from '../i18n/translations';
 import type { FieldMeasurement, SolarProject } from '../types/mithaq';
 
 interface FieldMeasurementsViewProps {
@@ -8,48 +10,56 @@ interface FieldMeasurementsViewProps {
   onUpdateProject: (updated: SolarProject) => void;
 }
 
-const PRESET_PARAMETERS = [
-  { label: 'Measured PV String 1 Open-Circuit Voltage (Voc)', unit: 'V' },
-  { label: 'Measured PV String 2 Open-Circuit Voltage (Voc)', unit: 'V' },
-  { label: 'Measured Combined PV Input Current (I_pv)', unit: 'A' },
-  { label: 'Measured Battery Bank DC Voltage', unit: 'V' },
-  { label: 'Measured AC Output / Grid Voltage', unit: 'V' },
-  { label: 'Measured Module Backsheet Temperature', unit: '°C' },
-  { label: 'Measured Insulation Resistance', unit: 'MΩ' },
-];
-
 export function FieldMeasurementsView({
   project,
   onUpdateProject,
 }: FieldMeasurementsViewProps) {
-  const [parameter, setParameter] = useState(PRESET_PARAMETERS[0].label);
+  const { lang, tr: t } = useI18n();
+  const presets = t.measurements.presets;
+  const [presetIdx, setPresetIdx] = useState(0);
+  const [parameter, setParameter] = useState(() => presets[0].label);
   const [value, setValue] = useState('');
-  const [unit, setUnit] = useState('V');
+  const [unit, setUnit] = useState(() => presets[0].unit);
   const [measuredAt, setMeasuredAt] = useState(new Date().toISOString().slice(0, 16));
   const [technicianName, setTechnicianName] = useState('');
   const [notes, setNotes] = useState('');
   const [error, setError] = useState<string | null>(null);
 
-  const checks = runEngineeringValidation(project);
+  useEffect(() => {
+    const enMatchIdx = TRANSLATIONS.en.measurements.presets.findIndex((p) => p.label === parameter);
+    const arMatchIdx = TRANSLATIONS.ar.measurements.presets.findIndex((p) => p.label === parameter);
+    const idx = enMatchIdx >= 0 ? enMatchIdx : arMatchIdx >= 0 ? arMatchIdx : presetIdx;
+    if (presets[idx]) {
+      setPresetIdx(idx);
+      setParameter(presets[idx].label);
+      setUnit(presets[idx].unit);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lang]);
+
+  const checks = runEngineeringValidation(project, lang);
   const calcVoc = checks.find((c) => c.id === 'check-pv-voc-stc')?.calculatedValue;
   const calcIsc = checks.find((c) => c.id === 'check-pv-shortcircuit-current')?.calculatedValue;
   const calcImp = checks.find((c) => c.id === 'check-pv-operating-current')?.calculatedValue;
 
   const handleParamChange = (val: string) => {
     setParameter(val);
-    const match = PRESET_PARAMETERS.find((p) => p.label === val);
-    if (match) setUnit(match.unit);
+    const idx = presets.findIndex((p) => p.label === val);
+    if (idx >= 0) {
+      setPresetIdx(idx);
+      setUnit(presets[idx].unit);
+    }
   };
 
   const handleAdd = (e: React.FormEvent) => {
     e.preventDefault();
     const numeric = Number(value);
     if (!parameter.trim() || !value.trim() || !Number.isFinite(numeric)) {
-      setError('Enter a valid parameter name and numeric measurement value.');
+      setError(t.measurements.errInvalidValue);
       return;
     }
     if (!technicianName.trim()) {
-      setError('Technician or inspector name is required for traceability.');
+      setError(t.measurements.errTechRequired);
       return;
     }
     setError(null);
@@ -88,26 +98,21 @@ export function FieldMeasurementsView({
       <div className="bg-white border border-slate-200 rounded-lg p-6">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-4 border-b border-slate-200">
           <div>
-            <h2 className="text-lg font-semibold text-slate-900">
-              Step 6 — Technician Field Measurements (Manual Entry)
-            </h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Record on-site multimeter or clamp-meter readings. Field measurements are stored
-              separately from calculated STC values and are never synthesized automatically.
-            </p>
+            <h2 className="text-lg font-semibold text-slate-900">{t.measurements.stepTitle}</h2>
+            <p className="text-xs text-slate-500 mt-0.5">{t.measurements.stepSubtitle}</p>
           </div>
           <div className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-700 bg-slate-100 border border-slate-200 px-3 py-1.5 rounded-md shrink-0">
             <ClipboardCheck className="w-4 h-4 text-slate-700" />
-            Manual Site Telemetry Log
+            {t.measurements.telemetryBadge}
           </div>
         </div>
 
         {(calcVoc !== null || calcIsc !== null || calcImp !== null) && (
           <div className="mt-4 bg-slate-50 border border-slate-200 rounded-md p-3 text-xs text-slate-700 flex flex-wrap gap-4 font-mono tabular-nums">
-            <span>Calculated Reference (STC):</span>
-            {calcVoc !== null && <span>String Voc = {calcVoc} V</span>}
-            {calcImp !== null && <span>Parallel Imp = {calcImp} A</span>}
-            {calcIsc !== null && <span>Parallel Isc = {calcIsc} A</span>}
+            <span>{t.measurements.calcRefLabel}</span>
+            {calcVoc !== null && <span dir="ltr">String Voc = {calcVoc} V</span>}
+            {calcImp !== null && <span dir="ltr">Parallel Imp = {calcImp} A</span>}
+            {calcIsc !== null && <span dir="ltr">Parallel Isc = {calcIsc} A</span>}
           </div>
         )}
 
@@ -121,14 +126,14 @@ export function FieldMeasurementsView({
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="sm:col-span-2">
               <label className="block text-xs font-medium text-slate-700 mb-1">
-                Measurement Parameter
+                {t.measurements.paramLabel}
               </label>
               <select
                 value={parameter}
                 onChange={(e) => handleParamChange(e.target.value)}
                 className="w-full px-3 py-2 text-sm border border-slate-300 rounded-md bg-white"
               >
-                {PRESET_PARAMETERS.map((p) => (
+                {presets.map((p) => (
                   <option key={p.label} value={p.label}>
                     {p.label}
                   </option>
@@ -138,15 +143,15 @@ export function FieldMeasurementsView({
 
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1">
-                Measured Value
+                {t.measurements.valueLabel}
               </label>
-              <div className="flex">
+              <div dir="ltr" className="flex">
                 <input
                   type="number"
                   step="any"
                   value={value}
                   onChange={(e) => setValue(e.target.value)}
-                  placeholder="e.g. 388.4"
+                  placeholder="388.4"
                   className="w-full px-3 py-2 text-sm font-mono tabular-nums border border-slate-300 rounded-l-md"
                 />
                 <input
@@ -154,16 +159,17 @@ export function FieldMeasurementsView({
                   value={unit}
                   onChange={(e) => setUnit(e.target.value)}
                   className="w-16 px-2 py-2 text-sm font-mono text-center border-y border-r border-slate-300 rounded-r-md bg-slate-50"
-                  aria-label="Measurement unit"
+                  aria-label={t.measurements.unitAria}
                 />
               </div>
             </div>
 
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1">
-                Measurement Date & Time
+                {t.measurements.dateTimeLabel}
               </label>
               <input
+                dir="ltr"
                 type="datetime-local"
                 value={measuredAt}
                 onChange={(e) => setMeasuredAt(e.target.value)}
@@ -173,26 +179,26 @@ export function FieldMeasurementsView({
 
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1">
-                Technician / Inspector Name
+                {t.measurements.techNameLabel}
               </label>
               <input
                 type="text"
                 value={technicianName}
                 onChange={(e) => setTechnicianName(e.target.value)}
-                placeholder="e.g. Eng. Sara Al-Khatib"
+                placeholder={t.measurements.techNamePlaceholder}
                 className="w-full px-3 py-2 text-sm border border-slate-300 rounded-md"
               />
             </div>
 
             <div className="sm:col-span-2 lg:col-span-3">
               <label className="block text-xs font-medium text-slate-700 mb-1">
-                Inspection Notes & Environmental Conditions
+                {t.measurements.notesLabel}
               </label>
               <input
                 type="text"
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
-                placeholder="e.g. Clear sky, irradiance ~890 W/m², Fluke 393FC clamp meter"
+                placeholder={t.measurements.notesPlaceholder}
                 className="w-full px-3 py-2 text-sm border border-slate-300 rounded-md"
               />
             </div>
@@ -204,7 +210,7 @@ export function FieldMeasurementsView({
               className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-md hover:bg-slate-800 whitespace-nowrap"
             >
               <Plus className="w-3.5 h-3.5" />
-              Log Field Measurement
+              {t.measurements.logBtn}
             </button>
           </div>
         </form>
@@ -214,57 +220,67 @@ export function FieldMeasurementsView({
       <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
         <div className="px-6 py-4 border-b border-slate-200">
           <h3 className="text-base font-semibold text-slate-900">
-            Recorded Field Measurements ({project.fieldMeasurements.length})
+            {fmt(t.measurements.tableTitle, { count: project.fieldMeasurements.length })}
           </h3>
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
+          <table className="w-full text-start border-collapse">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600">
-                <th className="py-2.5 px-4">Parameter</th>
-                <th className="py-2.5 px-4">Measured Reading</th>
-                <th className="py-2.5 px-4">Source Type</th>
-                <th className="py-2.5 px-4">Timestamp</th>
-                <th className="py-2.5 px-4">Technician</th>
-                <th className="py-2.5 px-4">Notes</th>
-                <th className="py-2.5 px-4 text-right">Action</th>
+                <th className="py-2.5 px-4 text-start">{t.measurements.colParam}</th>
+                <th className="py-2.5 px-4 text-start">{t.measurements.colReading}</th>
+                <th className="py-2.5 px-4 text-start">{t.measurements.colSourceType}</th>
+                <th className="py-2.5 px-4 text-start">{t.measurements.colTimestamp}</th>
+                <th className="py-2.5 px-4 text-start">{t.measurements.colTechnician}</th>
+                <th className="py-2.5 px-4 text-start">{t.measurements.colNotes}</th>
+                <th className="py-2.5 px-4 text-end">{t.measurements.colAction}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 text-xs">
               {project.fieldMeasurements.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="py-6 text-center text-slate-500">
-                    No field measurements recorded yet. Log your first site measurement above.
+                    {t.measurements.emptyRow}
                   </td>
                 </tr>
               ) : (
                 project.fieldMeasurements.map((m) => (
                   <tr key={m.id}>
                     <td className="py-3 px-4 font-medium text-slate-900">{m.parameter}</td>
-                    <td className="py-3 px-4 font-mono tabular-nums font-semibold text-slate-900 whitespace-nowrap">
+                    <td
+                      dir="ltr"
+                      className="py-3 px-4 font-mono tabular-nums font-semibold text-slate-900 whitespace-nowrap text-start"
+                    >
                       {m.value} {m.unit}
                     </td>
                     <td className="py-3 px-4 whitespace-nowrap">
                       {m.isSimulated ? (
-                        <span className="text-amber-800 font-medium">Simulated Demo Reading</span>
+                        <span className="text-amber-800 font-medium">
+                          {t.measurements.simulatedReading}
+                        </span>
                       ) : (
-                        <span className="text-slate-700 font-medium">Manual Field Entry</span>
+                        <span className="text-slate-700 font-medium">
+                          {t.measurements.manualEntry}
+                        </span>
                       )}
                     </td>
-                    <td className="py-3 px-4 font-mono tabular-nums text-slate-600 whitespace-nowrap">
+                    <td
+                      dir="ltr"
+                      className="py-3 px-4 font-mono tabular-nums text-slate-600 whitespace-nowrap text-start"
+                    >
                       {m.measuredAt.replace('T', ' ')}
                     </td>
                     <td className="py-3 px-4 text-slate-800 whitespace-nowrap">
                       {m.technicianName}
                     </td>
                     <td className="py-3 px-4 text-slate-600">{m.notes || '—'}</td>
-                    <td className="py-3 px-4 text-right">
+                    <td className="py-3 px-4 text-end">
                       <button
                         type="button"
                         onClick={() => handleDelete(m.id)}
                         className="p-1 text-slate-400 hover:text-red-700"
-                        aria-label="Delete field measurement"
+                        aria-label={t.measurements.deleteAria}
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>

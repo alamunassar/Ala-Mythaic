@@ -1,4 +1,5 @@
-import type { EquipmentCategory, EquipmentSpec, OriginalAiExtractionSnapshot } from '../types/mithaq';
+import { getTranslations, type Language } from '../i18n/translations.ts';
+import type { EquipmentCategory, EquipmentSpec, OriginalAiExtractionSnapshot } from '../types/mithaq.ts';
 
 export type SpecFieldKey =
   | 'manufacturer'
@@ -286,4 +287,83 @@ export function createOriginalAiSnapshot(
       additionalSpecs: strOrNull(sanitized.additionalSpecs),
     },
   };
+}
+
+export function getCategoryFieldLabel(
+  category: EquipmentCategory,
+  key: SpecFieldKey,
+  lang: Language = 'en',
+): string {
+  const sf = getTranslations(lang).specFields;
+  switch (key) {
+    case 'manufacturer':
+      return sf.manufacturer;
+    case 'model':
+      return sf.model;
+    case 'ratedPowerW':
+      return category === 'INVERTER'
+        ? sf.ratedPowerWInverter
+        : category === 'BATTERY'
+          ? sf.ratedPowerWBattery
+          : sf.ratedPowerW;
+    case 'vocV':
+      return sf.vocV;
+    case 'vmpV':
+      return sf.vmpV;
+    case 'iscA':
+      return sf.iscA;
+    case 'impA':
+      return sf.impA;
+    case 'tempCoeffVocPctPerC':
+      return sf.tempCoeffVocPctPerC;
+    case 'nominalVoltageV':
+      return category === 'INVERTER' ? sf.nominalVoltageVInverter : sf.nominalVoltageVBattery;
+    case 'minBatteryVoltageV':
+      return category === 'INVERTER'
+        ? sf.minBatteryVoltageVInverter
+        : sf.minBatteryVoltageVBattery;
+    case 'maxBatteryVoltageV':
+      return category === 'INVERTER'
+        ? sf.maxBatteryVoltageVInverter
+        : sf.maxBatteryVoltageVBattery;
+    case 'maxPvInputVoltageV':
+      return sf.maxPvInputVoltageV;
+    case 'maxPvOperatingCurrentA':
+      return sf.maxPvOperatingCurrentA;
+    case 'maxPvShortCircuitCurrentA':
+      return sf.maxPvShortCircuitCurrentA;
+    case 'mpptMinV':
+      return sf.mpptMinV;
+    case 'mpptMaxV':
+      return sf.mpptMaxV;
+    case 'capacityKwh':
+      return sf.capacityKwh;
+    case 'serialNumber':
+      return sf.serialNumber;
+    case 'additionalSpecs':
+      return category === 'INVERTER'
+        ? sf.additionalSpecsInverter
+        : category === 'BATTERY'
+          ? sf.additionalSpecsBattery
+          : sf.additionalSpecsPv;
+  }
+}
+
+export function localizeCategoryFieldText(
+  category: EquipmentCategory,
+  rawLabel: string,
+  lang: Language = 'en',
+): string {
+  const trimmed = rawLabel.trim();
+  if (!trimmed || lang === 'en') return trimmed;
+  const normalized = trimmed.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (!normalized) return trimmed;
+  const defs = CATEGORY_FIELD_DEFINITIONS[category];
+  const matched = defs.find(
+    (d) =>
+      d.key.toLowerCase() === normalized ||
+      d.label.toLowerCase().replace(/[^a-z0-9]/g, '') === normalized ||
+      d.aliases.some((a) => a.replace(/[^a-z0-9]/g, '') === normalized),
+  );
+  return matched ? getCategoryFieldLabel(category, matched.key, lang) : trimmed;
 }
