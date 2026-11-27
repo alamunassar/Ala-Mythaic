@@ -359,11 +359,44 @@ export function localizeCategoryFieldText(
   const normalized = trimmed.toLowerCase().replace(/[^a-z0-9]/g, '');
   if (!normalized) return trimmed;
   const defs = CATEGORY_FIELD_DEFINITIONS[category];
-  const matched = defs.find(
+  // 1. Exact match on key, label, or alias
+  let matched = defs.find(
     (d) =>
       d.key.toLowerCase() === normalized ||
       d.label.toLowerCase().replace(/[^a-z0-9]/g, '') === normalized ||
       d.aliases.some((a) => a.replace(/[^a-z0-9]/g, '') === normalized),
   );
+  // 2. Match base phrase before parenthetical or descriptive "not printed..." text
+  if (!matched) {
+    const basePhrase = trimmed
+      .replace(/\s*\(.*?\)\s*/g, ' ')
+      .replace(/\bnot printed.*$/i, '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '');
+    if (basePhrase) {
+      matched = defs.find(
+        (d) =>
+          d.key.toLowerCase() === basePhrase ||
+          d.label.toLowerCase().replace(/[^a-z0-9]/g, '') === basePhrase ||
+          d.aliases.some((a) => a.replace(/[^a-z0-9]/g, '') === basePhrase),
+      );
+    }
+  }
+  // 3. Longest alias / key substring match for descriptive labels (e.g. "Voc Temperature Coefficient (not printed...)")
+  if (!matched) {
+    const candidates = defs
+      .flatMap((d) =>
+        [d.label, ...d.aliases].map((a) => ({
+          def: d,
+          normAlias: a.toLowerCase().replace(/[^a-z0-9]/g, ''),
+        })),
+      )
+      .filter((c) => c.normAlias.length >= 6 && normalized.includes(c.normAlias))
+      .sort((a, b) => b.normAlias.length - a.normAlias.length);
+    if (candidates.length > 0) {
+      matched = candidates[0].def;
+    }
+  }
   return matched ? getCategoryFieldLabel(category, matched.key, lang) : trimmed;
 }

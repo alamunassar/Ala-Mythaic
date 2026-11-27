@@ -30,6 +30,7 @@ import {
 import { useI18n } from './i18n/I18nContext';
 import type { AppSection, SolarProject } from './types/mithaq';
 import { downloadProjectPdfReport } from './utils/pdfReport';
+import { localizeDemoCustomerName } from './utils/demoLocalization';
 import {
   loadActiveProjectId,
   loadProjects,
@@ -246,12 +247,12 @@ export default function App() {
       {/* Main Content Area */}
       <div className="flex-1 min-w-0 flex flex-col">
         {/* Top Workspace Header */}
-        <header className="bg-white border-b border-slate-200 px-4 sm:px-6 py-3.5 flex items-center justify-between gap-3 sticky top-0 z-30">
-          <div className="flex items-center gap-3 min-w-0">
+        <header className="bg-white border-b border-slate-200 px-3 sm:px-6 py-3 flex items-center justify-between gap-2 sm:gap-3 sticky top-0 z-30">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
             <button
               type="button"
               onClick={() => setMobileNavOpen(true)}
-              className="lg:hidden p-2 text-slate-700 hover:bg-slate-100 rounded-md"
+              className="lg:hidden p-2 text-slate-700 hover:bg-slate-100 rounded-md shrink-0"
               aria-label={tr.nav.openMenu}
             >
               <Menu className="w-5 h-5" />
@@ -267,11 +268,11 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-3 shrink-0 min-w-0">
             <div
               role="group"
               aria-label={tr.langSwitcher.ariaLabel}
-              className="inline-flex items-center rounded-md border border-slate-300 bg-slate-50 p-0.5 text-[11px] font-semibold"
+              className="inline-flex items-center rounded-md border border-slate-300 bg-slate-50 p-0.5 text-[11px] font-semibold shrink-0"
             >
               <button
                 type="button"
@@ -283,7 +284,8 @@ export default function App() {
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                {tr.langSwitcher.arLabel}
+                <span className="sm:hidden">AR</span>
+                <span className="hidden sm:inline">{tr.langSwitcher.arLabel}</span>
               </button>
               <button
                 type="button"
@@ -295,7 +297,8 @@ export default function App() {
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                {tr.langSwitcher.enLabel}
+                <span className="sm:hidden">EN</span>
+                <span className="hidden sm:inline">{tr.langSwitcher.enLabel}</span>
               </button>
             </div>
 
@@ -303,11 +306,11 @@ export default function App() {
               value={activeProject.id}
               onChange={(e) => handleSelectProject(e.target.value)}
               aria-label={tr.header.activeProjectAria}
-              className="max-w-[160px] sm:max-w-[240px] px-2.5 py-1.5 text-xs font-medium border border-slate-300 rounded-md bg-white text-slate-800 truncate"
+              className="min-w-0 max-w-[130px] sm:max-w-[240px] px-2 sm:px-2.5 py-1.5 text-xs font-medium border border-slate-300 rounded-md bg-white text-slate-800 truncate"
             >
               {projects.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {p.id} — {p.customerName}
+                  {p.id} — {localizeDemoCustomerName(p.customerName, lang)}
                 </option>
               ))}
             </select>

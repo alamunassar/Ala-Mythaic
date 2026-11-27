@@ -9,6 +9,8 @@ import {
 import { useI18n } from '../i18n/I18nContext';
 import { fmt } from '../i18n/translations';
 import type { AppSection, SolarProject } from '../types/mithaq';
+import { localizeDemoCustomerName } from '../utils/demoLocalization';
+import { containsArabic } from '../utils/pdfRtl';
 import { StatusIndicator } from './StatusBadge';
 
 interface ComparisonViewProps {
@@ -17,7 +19,7 @@ interface ComparisonViewProps {
 }
 
 export function ComparisonView({ project, onNavigate }: ComparisonViewProps) {
-  const { lang, tr: t } = useI18n();
+  const { lang, dir, tr: t } = useI18n();
   const comparisons = comparePromisedVsInstalled(project, lang);
   const checks = runEngineeringValidation(project, lang);
   const summary = computeAuditSummary(comparisons, checks, lang);
@@ -31,7 +33,9 @@ export function ComparisonView({ project, onNavigate }: ComparisonViewProps) {
           <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
           <span>
             <span className="font-semibold">{t.common.simDataBannerTitle}</span>{' '}
-            {fmt(t.common.simDataBannerBody, { customer: project.customerName })}
+            {fmt(t.common.simDataBannerBody, {
+              customer: localizeDemoCustomerName(project.customerName, lang),
+            })}
           </span>
         </div>
       )}
@@ -56,7 +60,7 @@ export function ComparisonView({ project, onNavigate }: ComparisonViewProps) {
           <div>
             <div className="text-slate-500">{t.comparison.specMatchTitle}</div>
             <div dir="ltr" className="text-xl font-bold font-mono tabular-nums text-slate-900 mt-0.5 w-fit">
-              {summary.equipmentMatchPct !== null ? `${summary.equipmentMatchPct}%` : 'N/A'}
+              {summary.equipmentMatchPct !== null ? `${summary.equipmentMatchPct}%` : t.common.na}
             </div>
             <div className="text-[11px] font-mono text-slate-500 mt-0.5">
               {summary.eligibleCategories > 0
@@ -67,7 +71,7 @@ export function ComparisonView({ project, onNavigate }: ComparisonViewProps) {
                   })
                 : t.comparison.noEligibleSummary}
             </div>
-            <div dir="ltr" className="text-[10px] text-slate-500 mt-1 w-fit">
+            <div dir={dir} className="text-[10px] text-slate-500 mt-1 w-fit">
               {summary.equipmentMatchFormula}
             </div>
           </div>
@@ -131,7 +135,9 @@ export function ComparisonView({ project, onNavigate }: ComparisonViewProps) {
                 <h3 className="text-base font-semibold text-slate-900">{comp.label}</h3>
                 {comp.eligibility !== 'ELIGIBLE' && (
                   <span className="text-[11px] font-mono text-slate-600 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded">
-                    {fmt(t.comparison.excludedBadge, { eligibility: comp.eligibility })}
+                    {fmt(t.comparison.excludedBadge, {
+                      eligibility: t.comparison.eligibilityLabels[comp.eligibility],
+                    })}
                   </span>
                 )}
               </div>
@@ -166,13 +172,19 @@ export function ComparisonView({ project, onNavigate }: ComparisonViewProps) {
                 ) : (
                   comp.differences.map((diff, idx) => (
                     <tr key={idx}>
-                      <td className="py-3 px-4 font-medium text-slate-900 whitespace-nowrap">
+                      <td className="py-3 px-4 font-medium text-slate-900 min-w-[120px]">
                         {diff.field}
                       </td>
-                      <td dir="ltr" className="py-3 px-4 font-mono tabular-nums text-slate-800 text-start">
+                      <td
+                        dir={containsArabic(diff.promised) ? undefined : 'ltr'}
+                        className="py-3 px-4 font-mono tabular-nums text-slate-800 text-start"
+                      >
                         {diff.promised}
                       </td>
-                      <td dir="ltr" className="py-3 px-4 font-mono tabular-nums text-slate-800 text-start">
+                      <td
+                        dir={containsArabic(diff.installed) ? undefined : 'ltr'}
+                        className="py-3 px-4 font-mono tabular-nums text-slate-800 text-start"
+                      >
                         {diff.installed}
                       </td>
                       <td className="py-3 px-4">

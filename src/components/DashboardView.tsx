@@ -10,6 +10,7 @@ import { useI18n } from '../i18n/I18nContext';
 import { fmt } from '../i18n/translations';
 import type { AppSection, SolarProject } from '../types/mithaq';
 import { safeFetchJson } from '../utils/api';
+import { localizeDemoCustomerName, localizeDemoLocation } from '../utils/demoLocalization';
 import { downloadProjectPdfReport } from '../utils/pdfReport';
 import { InputConfidenceBadge, StatusIndicator } from './StatusBadge';
 
@@ -118,7 +119,9 @@ export function DashboardView({
               <span className="font-semibold">
                 {project.isDemo ? t.common.simDataBannerDemoTitle : t.common.simDataBannerTitle}
               </span>{' '}
-              {fmt(t.common.simDataBannerBody, { customer: project.customerName })}
+              {fmt(t.common.simDataBannerBody, {
+                customer: localizeDemoCustomerName(project.customerName, lang),
+              })}
             </div>
           </div>
           {project.isDemo && (
@@ -142,7 +145,7 @@ export function DashboardView({
                 {project.id}
               </span>
               <span aria-hidden="true">·</span>
-              <span>{project.location}</span>
+              <span>{localizeDemoLocation(project.location, lang)}</span>
               <span aria-hidden="true">·</span>
               <span>{t.systemTypes[project.systemType] ?? project.systemType}</span>
               <span aria-hidden="true">·</span>
@@ -154,7 +157,7 @@ export function DashboardView({
               </span>
             </div>
             <h2 className="text-2xl font-bold text-slate-900 tracking-tight">
-              {project.customerName}
+              {localizeDemoCustomerName(project.customerName, lang)}
             </h2>
           </div>
 
@@ -183,7 +186,7 @@ export function DashboardView({
             <div className="text-xs font-medium text-slate-500">{t.dashboard.kpiSpecMatchTitle}</div>
             <div className="mt-1 flex items-baseline gap-2">
               <span dir="ltr" className="text-3xl font-bold font-mono tabular-nums text-slate-900">
-                {summary.equipmentMatchPct !== null ? `${summary.equipmentMatchPct}%` : 'N/A'}
+                {summary.equipmentMatchPct !== null ? `${summary.equipmentMatchPct}%` : t.common.na}
               </span>
               <span className="text-xs text-slate-500 tabular-nums">
                 {summary.eligibleCategories > 0
@@ -383,13 +386,13 @@ export function DashboardView({
                     />
                   )}
                 </div>
-                <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 mt-2 font-mono tabular-nums">
-                  <span>0 V</span>
-                  <span>
+                <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-xs text-slate-500 mt-2 font-mono tabular-nums">
+                  <span className="order-1">0 V</span>
+                  <span className="order-3 sm:order-2 w-full sm:w-auto text-center">
                     Vmp: {vmpVal !== null ? `${vmpVal} V` : '—'} · Voc(STC):{' '}
                     {vocVal !== null ? `${vocVal} V` : '—'}
                   </span>
-                  <span>{maxV} V</span>
+                  <span className="order-2 sm:order-3">{maxV} V</span>
                 </div>
               </div>
             </div>
@@ -401,15 +404,17 @@ export function DashboardView({
                   className="py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2"
                 >
                   <div className="min-w-0">
-                    <div className="text-xs font-medium text-slate-900 truncate">{ck.title}</div>
-                    <div className="text-xs font-mono tabular-nums text-slate-500">
+                    <div className="text-xs font-medium text-slate-900 break-words leading-snug">
+                      {ck.title}
+                    </div>
+                    <div className="text-xs font-mono tabular-nums text-slate-500 mt-0.5 break-words">
                       {ck.calculatedValue !== null
                         ? fmt(t.dashboard.limitPrefix, {
                             val: ck.calculatedValue,
                             unit: ck.calculatedUnit,
                             limit: ck.limitValue,
                           })
-                        : fmt(t.dashboard.missingPrefix, { fields: ck.missingInputs.join(', ') })}
+                        : fmt(t.dashboard.missingPrefix, { fields: ck.missingInputs.join('، ') })}
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5 shrink-0">

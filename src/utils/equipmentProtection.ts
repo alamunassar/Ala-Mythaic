@@ -8,9 +8,11 @@ import type {
   EquipmentCategory,
   EquipmentSpec,
 } from '../types/mithaq.ts';
+import { getTranslations, ltr, type Language } from '../i18n/translations.ts';
 import {
   CATEGORY_FIELD_DEFINITIONS,
   filterUnreadableFieldsByCategory,
+  getCategoryFieldLabel,
   type SpecFieldKey,
 } from './categorySpecs.ts';
 
@@ -61,9 +63,15 @@ function isEmptySpecValue(value: unknown): boolean {
   return false;
 }
 
-function formatDiffValue(value: unknown, unit?: string): string {
-  if (isEmptySpecValue(value)) return 'Missing';
-  return unit ? `${value} ${unit}` : String(value);
+function formatDiffValue(value: unknown, unit?: string, lang: Language = 'en'): string {
+  const tr = getTranslations(lang);
+  if (isEmptySpecValue(value)) return tr.common.missing;
+  if (!unit) return String(value);
+  const localizedUnit = unit === 'units' ? tr.common.units : unit;
+  if (lang === 'ar') {
+    return unit === 'units' ? `${ltr(String(value))} ${localizedUnit}` : ltr(`${value} ${unit}`);
+  }
+  return `${value} ${localizedUnit}`;
 }
 
 function areFieldValuesEqual(a: unknown, b: unknown): boolean {
@@ -101,15 +109,17 @@ export interface ExtractionMergePlan {
 export function computeExtractionFieldDiffs(
   existing: EquipmentSpec,
   proposed: EquipmentSpec,
+  lang: Language = 'en',
 ): ExtractionFieldDiff[] {
+  const tr = getTranslations(lang);
   const diffs: ExtractionFieldDiff[] = [];
 
   if (!areFieldValuesEqual(existing.quantity, proposed.quantity)) {
     diffs.push({
       key: 'quantity',
-      label: 'Quantity',
-      existingValue: formatDiffValue(existing.quantity, 'units'),
-      proposedValue: formatDiffValue(proposed.quantity, 'units'),
+      label: tr.modal.quantityLabel,
+      existingValue: formatDiffValue(existing.quantity, 'units', lang),
+      proposedValue: formatDiffValue(proposed.quantity, 'units', lang),
     });
   }
 
@@ -119,9 +129,9 @@ export function computeExtractionFieldDiffs(
     if (!areFieldValuesEqual(existingVal, proposedVal)) {
       diffs.push({
         key: def.key,
-        label: def.label,
-        existingValue: formatDiffValue(existingVal, def.unit),
-        proposedValue: formatDiffValue(proposedVal, def.unit),
+        label: getCategoryFieldLabel(existing.category, def.key, lang),
+        existingValue: formatDiffValue(existingVal, def.unit, lang),
+        proposedValue: formatDiffValue(proposedVal, def.unit, lang),
       });
     }
   }
@@ -133,6 +143,7 @@ export function planEquipmentExtractionMerge(
   existing: EquipmentSpec[],
   incoming: EquipmentSpec[],
   projectIsDemo = false,
+  lang: Language = 'en',
 ): ExtractionMergePlan {
   // Deduplicate incoming specs per category (keep latest extracted entry per category)
   const incomingByCategory = new Map<EquipmentCategory, EquipmentSpec>();
@@ -164,7 +175,7 @@ export function planEquipmentExtractionMerge(
         category,
         existing: existingRecord,
         proposed,
-        changedFields: computeExtractionFieldDiffs(existingRecord, proposed),
+        changedFields: computeExtractionFieldDiffs(existingRecord, proposed, lang),
       });
       continue;
     }

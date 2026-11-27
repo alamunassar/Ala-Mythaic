@@ -13,14 +13,16 @@ import {
 import type { DataProvenance, EquipmentCategory, EquipmentSpec } from '../types/mithaq';
 import { detectSimulatedMarkers, getCategoryLabel } from '../engine/engineeringEngine';
 import { useI18n } from '../i18n/I18nContext';
-import { fmt, type Language } from '../i18n/translations';
+import { fmt } from '../i18n/translations';
 import { safeFetchJson } from '../utils/api';
 import {
   CATEGORY_FIELD_DEFINITIONS,
   filterUnreadableFieldsByCategory,
   getCategoryFieldLabel,
+  localizeCategoryFieldText,
   sanitizeSpecFieldsByCategory,
 } from '../utils/categorySpecs';
+import { localizeDemoUncertainField } from '../utils/demoLocalization';
 import {
   extractTrackedFieldValues,
   resolveManualEditProvenance,
@@ -46,17 +48,6 @@ function toNumOrNull(val: string): number | null {
 function toStrOrNull(val: string): string | null {
   const trimmed = val.trim();
   return trimmed ? trimmed : null;
-}
-
-function localizeUnreadableLabel(category: EquipmentCategory, raw: string, lang: Language): string {
-  const norm = raw.toLowerCase().replace(/[^a-z0-9]/g, '');
-  const match = CATEGORY_FIELD_DEFINITIONS[category].find(
-    (d) =>
-      d.key.toLowerCase() === norm ||
-      d.label.toLowerCase().replace(/[^a-z0-9]/g, '') === norm ||
-      d.aliases.some((a) => a.replace(/[^a-z0-9]/g, '') === norm),
-  );
-  return match ? getCategoryFieldLabel(category, match.key, lang) : raw;
 }
 
 function fileToBase64(file: File): Promise<string> {
@@ -164,7 +155,7 @@ export function EquipmentFormModal({
   const [serialNumber, setSerialNumber] = useState(initialSpec?.serialNumber ?? '');
   const [additionalSpecs, setAdditionalSpecs] = useState(initialSpec?.additionalSpecs ?? '');
   const initialIsSimulated = initialSpec
-    ? detectSimulatedMarkers(initialSpec, projectIsDemo).length > 0
+    ? detectSimulatedMarkers(initialSpec, projectIsDemo, lang).length > 0
     : projectIsDemo;
   const [verifiedByUser, setVerifiedByUser] = useState<boolean>(
     initialSpec && !initialIsSimulated ? Boolean(initialSpec.verifiedByUser) : false,
@@ -211,6 +202,7 @@ export function EquipmentFormModal({
           datasheetFileName,
         },
         projectIsDemo,
+        lang,
       ),
     [
       initialSpec?.id,
@@ -221,6 +213,7 @@ export function EquipmentFormModal({
       additionalSpecs,
       datasheetFileName,
       projectIsDemo,
+      lang,
     ],
   );
   const isSimulatedRecord = simulatedReasons.length > 0;
@@ -558,7 +551,9 @@ export function EquipmentFormModal({
                 {initialSpec?.uncertainFields && initialSpec.uncertainFields.length > 0 && (
                   <p>
                     <span className="font-semibold">{t.modal.uncertainFieldsLabel}</span>{' '}
-                    {initialSpec.uncertainFields.join(' · ')}
+                    {initialSpec.uncertainFields
+                      .map((f) => localizeDemoUncertainField(f, lang))
+                      .join(' · ')}
                   </p>
                 )}
                 {filteredUnreadable.length > 0 && (
@@ -569,7 +564,7 @@ export function EquipmentFormModal({
                       })}
                     </span>{' '}
                     {filteredUnreadable
-                      .map((item) => localizeUnreadableLabel(category, item, lang))
+                      .map((item) => localizeCategoryFieldText(category, item, lang))
                       .join(' · ')}
                   </p>
                 )}
@@ -636,7 +631,7 @@ export function EquipmentFormModal({
                             </div>
                             <div
                               dir={hasOrig ? 'ltr' : undefined}
-                              className="text-slate-900 font-medium truncate text-start"
+                              className="text-slate-900 font-medium break-words text-start"
                             >
                               {hasOrig
                                 ? `${rawVal}${def.unit ? ` ${def.unit}` : ''}`
@@ -771,6 +766,7 @@ export function EquipmentFormModal({
                 {t.modal.mfgLabel}
               </label>
               <input
+                dir="auto"
                 type="text"
                 value={manufacturer}
                 onChange={(e) => setManufacturer(e.target.value)}
@@ -1110,6 +1106,7 @@ export function EquipmentFormModal({
                 {t.modal.notesLabel}
               </label>
               <input
+                dir="auto"
                 type="text"
                 value={additionalSpecs}
                 onChange={(e) => setAdditionalSpecs(e.target.value)}

@@ -20,7 +20,7 @@ import {
   resolveEquipmentProvenance,
 } from '../engine/engineeringEngine';
 import { useI18n } from '../i18n/I18nContext';
-import { fmt, type Language } from '../i18n/translations';
+import { fmt } from '../i18n/translations';
 import type {
   AppSection,
   DataProvenance,
@@ -36,8 +36,13 @@ import {
   filterUnreadableFieldsByCategory,
   getCategoryFieldLabel,
   getMissingCategoryFields,
+  localizeCategoryFieldText,
   sanitizeSpecFieldsByCategory,
 } from '../utils/categorySpecs';
+import {
+  localizeDemoAdditionalSpecs,
+  localizeDemoManufacturer,
+} from '../utils/demoLocalization';
 import {
   planEquipmentExtractionMerge,
   resolveConflictFillMissingOnly,
@@ -45,23 +50,13 @@ import {
   resolveConflictReplaceWithProposed,
   type ExtractionConflict,
 } from '../utils/equipmentProtection';
+import { containsArabic } from '../utils/pdfRtl';
 import { EquipmentFormModal } from './EquipmentFormModal';
 
 interface InspectionWorkflowViewProps {
   project: SolarProject;
   onUpdateProject: (updated: SolarProject) => void;
   onNavigate: (section: AppSection) => void;
-}
-
-function localizeUnreadableLabel(category: EquipmentCategory, raw: string, lang: Language): string {
-  const norm = raw.toLowerCase().replace(/[^a-z0-9]/g, '');
-  const match = CATEGORY_FIELD_DEFINITIONS[category].find(
-    (d) =>
-      d.key.toLowerCase() === norm ||
-      d.label.toLowerCase().replace(/[^a-z0-9]/g, '') === norm ||
-      d.aliases.some((a) => a.replace(/[^a-z0-9]/g, '') === norm),
-  );
-  return match ? getCategoryFieldLabel(category, match.key, lang) : raw;
 }
 
 function fileToBase64(file: File): Promise<{ base64: string; dataUrl: string }> {
@@ -235,6 +230,7 @@ export function InspectionWorkflowView({
           project.promisedEquipment,
           mapped,
           project.isDemo,
+          lang,
         );
         setPendingQuoteConflicts(mergePlan.conflicts);
         onUpdateProject({
@@ -385,6 +381,7 @@ export function InspectionWorkflowView({
         project.installedEquipment,
         [newSpec],
         project.isDemo,
+        lang,
       );
 
       if (mergePlan.conflicts.length > 0) {
@@ -566,6 +563,7 @@ export function InspectionWorkflowView({
               {t.inspection.customerName}
             </label>
             <input
+              dir="auto"
               type="text"
               value={project.customerName}
               onChange={(e) => handleMetaUpdate({ customerName: e.target.value })}
@@ -577,6 +575,7 @@ export function InspectionWorkflowView({
               {t.inspection.location}
             </label>
             <input
+              dir="auto"
               type="text"
               value={project.location}
               onChange={(e) => handleMetaUpdate({ location: e.target.value })}
@@ -637,7 +636,7 @@ export function InspectionWorkflowView({
               {t.inspection.uploadQuoteLabel}
             </label>
             <div className="border border-dashed border-slate-300 rounded-md p-4 bg-slate-50 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-              <div className="text-xs text-slate-600">
+              <div dir="auto" className="text-xs text-slate-600 break-all min-w-0">
                 {quotationFile
                   ? fmt(t.inspection.selectedFile, { name: quotationFile.name })
                   : project.quotationFileName
@@ -770,7 +769,7 @@ export function InspectionWorkflowView({
                               ? t.modal.quantityLabel
                               : getCategoryFieldLabel(conflict.category, diff.key, lang)}
                           </div>
-                          <div className="font-mono text-slate-600 truncate">
+                          <div className="font-mono text-slate-600 break-words leading-snug">
                             {fmt(t.inspection.conflictVerifiedVsAi, {
                               existing: diff.existingValue,
                               proposed: diff.proposedValue,
@@ -809,19 +808,23 @@ export function InspectionWorkflowView({
               ) : (
                 project.promisedEquipment.map((eq) => {
                   const prov: DataProvenance = resolveEquipmentProvenance(eq, project.isDemo);
-                  const simReasons = detectSimulatedMarkers(eq, project.isDemo);
+                  const simReasons = detectSimulatedMarkers(eq, project.isDemo, lang);
+                  const mfgDisplay = localizeDemoManufacturer(eq.manufacturer, lang);
                   return (
                     <tr key={eq.id}>
                       <td className="py-2.5 px-3 font-medium text-slate-900 whitespace-nowrap">
                         {getCategoryLabel(eq.category, lang)}
                       </td>
                       <td className="py-2.5 px-3">
-                        <div className="font-medium text-slate-900">
-                          <span dir="ltr" className="inline-block">
-                            {eq.manufacturer ?? t.inspection.missingMfg}
+                        <div className="font-medium text-slate-900 break-words">
+                          <span
+                            dir={mfgDisplay && !containsArabic(mfgDisplay) ? 'ltr' : 'auto'}
+                            className="inline-block max-w-full break-words"
+                          >
+                            {mfgDisplay ?? t.inspection.missingMfg}
                           </span>{' '}
                           ·{' '}
-                          <span dir="ltr" className="font-mono inline-block">
+                          <span dir="ltr" className="font-mono inline-block max-w-full break-all">
                             {eq.model ?? t.inspection.missingModel}
                           </span>
                         </div>
@@ -909,8 +912,8 @@ export function InspectionWorkflowView({
         </div>
 
         <div className="bg-slate-50 border border-slate-200 rounded-md p-4 flex flex-col lg:flex-row lg:items-end justify-between gap-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 flex-1">
-            <div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 flex-1 min-w-0">
+            <div className="sm:col-span-2">
               <label className="block text-xs font-medium text-slate-700 mb-1">
                 {t.inspection.equipCategoryLabel}
               </label>
@@ -1069,7 +1072,7 @@ export function InspectionWorkflowView({
                               ? t.modal.quantityLabel
                               : getCategoryFieldLabel(conflict.category, diff.key, lang)}
                           </div>
-                          <div className="font-mono text-slate-600 truncate">
+                          <div className="font-mono text-slate-600 break-words leading-snug">
                             {fmt(t.inspection.conflictVerifiedVsAi, {
                               existing: diff.existingValue,
                               proposed: diff.proposedValue,
@@ -1104,14 +1107,16 @@ export function InspectionWorkflowView({
               const hasOriginalAi = Boolean(eq.originalAiExtraction);
               const isOriginalOpen = Boolean(expandedOriginalAiIds[eq.id]);
               const resolvedProv = resolveEquipmentProvenance(eq, project.isDemo);
-              const simReasons = detectSimulatedMarkers(eq, project.isDemo);
+              const simReasons = detectSimulatedMarkers(eq, project.isDemo, lang);
               const localizedMissingList = (
                 filteredUnreadable.length > 0
                   ? filteredUnreadable.map((item) =>
-                      localizeUnreadableLabel(eq.category, item, lang),
+                      localizeCategoryFieldText(eq.category, item, lang),
                     )
                   : missingRequired.map((m) => getCategoryFieldLabel(eq.category, m.key, lang))
               ).join(' · ');
+              const mfgDisplay = localizeDemoManufacturer(eq.manufacturer, lang);
+              const additionalDisplay = localizeDemoAdditionalSpecs(eq.additionalSpecs, lang);
 
               return (
                 <div
@@ -1169,14 +1174,17 @@ export function InspectionWorkflowView({
                       )}
 
                       <div>
-                        <div className="text-sm font-semibold text-slate-900">
-                          <span dir="ltr" className="inline-block">
-                            {eq.manufacturer ?? t.inspection.unknownMfg}
+                        <div className="text-sm font-semibold text-slate-900 break-words">
+                          <span
+                            dir={mfgDisplay && !containsArabic(mfgDisplay) ? 'ltr' : 'auto'}
+                            className="inline-block max-w-full break-words"
+                          >
+                            {mfgDisplay ?? t.inspection.unknownMfg}
                           </span>
                         </div>
-                        <div className="text-xs font-mono text-slate-700">
+                        <div className="text-xs font-mono text-slate-700 break-words">
                           {t.inspection.modelPrefix}{' '}
-                          <span dir="ltr" className="inline-block">
+                          <span dir="ltr" className="inline-block max-w-full break-all">
                             {eq.model ?? t.common.notReadable}
                           </span>{' '}
                           · {t.inspection.qtyPrefix}{' '}
@@ -1185,9 +1193,9 @@ export function InspectionWorkflowView({
                           </span>
                         </div>
                         {eq.serialNumber && (
-                          <div className="text-[11px] font-mono text-slate-500">
+                          <div className="text-[11px] font-mono text-slate-500 break-all">
                             {t.inspection.snPrefix}{' '}
-                            <span dir="ltr" className="inline-block">
+                            <span dir="ltr" className="inline-block max-w-full">
                               {eq.serialNumber}
                             </span>
                           </div>
@@ -1205,14 +1213,14 @@ export function InspectionWorkflowView({
                           return (
                             <div
                               key={def.key}
-                              className="bg-slate-50 border border-slate-200 rounded px-2 py-1"
+                              className="bg-slate-50 border border-slate-200 rounded px-2 py-1 min-w-0"
                             >
-                              <div className="text-[10px] text-slate-500 truncate">
+                              <div className="text-[10px] text-slate-500 break-words leading-snug">
                                 {getCategoryFieldLabel(eq.category, def.key, lang)}
                               </div>
                               <div
                                 dir={hasVal ? 'ltr' : undefined}
-                                className={`font-mono tabular-nums font-medium text-start ${
+                                className={`font-mono tabular-nums font-medium text-start break-words ${
                                   hasVal ? 'text-slate-900' : 'text-slate-400'
                                 }`}
                               >
@@ -1225,12 +1233,15 @@ export function InspectionWorkflowView({
                         })}
                       </div>
 
-                      {eq.additionalSpecs && (
-                        <div className="text-[11px] text-slate-600 bg-slate-50 border border-slate-200 rounded px-2 py-1.5">
+                      {additionalDisplay && (
+                        <div
+                          dir="auto"
+                          className="text-[11px] text-slate-600 bg-slate-50 border border-slate-200 rounded px-2 py-1.5 break-words"
+                        >
                           <span className="font-semibold text-slate-700">
                             {t.inspection.otherSpecsLabel}
                           </span>{' '}
-                          {eq.additionalSpecs}
+                          {additionalDisplay}
                         </div>
                       )}
 

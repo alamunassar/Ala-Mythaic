@@ -19,8 +19,29 @@ import {
 } from '../../data/demoProject.ts';
 import { buildProjectPdfDocument, toPdfSafeText } from '../../utils/pdfReport.ts';
 import {
+  PDF_RAW_TEXT_OPTIONS,
+  containsArabic,
+  finalizeRtlAutoTableLines,
+  prepareRtlLines,
+  prepareRtlSingleLine,
+  registerArabicFont,
+  shapeCellTextForAutoTable,
+  toVisualRtlLine,
+} from '../../utils/pdfRtl.ts';
+import {
+  localizeDemoAdditionalSpecs,
+  localizeDemoCustomerName,
+  localizeDemoLocation,
+  localizeDemoManufacturer,
+  localizeDemoMeasurementNotes,
+  localizeDemoMeasurementParam,
+  localizeDemoMeasurementTech,
+  localizeDemoUncertainField,
+} from '../../utils/demoLocalization.ts';
+import {
   createOriginalAiSnapshot,
   filterUnreadableFieldsByCategory,
+  localizeCategoryFieldText,
   sanitizeSpecFieldsByCategory,
 } from '../../utils/categorySpecs.ts';
 import { normalizeLoadedProject } from '../../utils/storage.ts';
@@ -33,6 +54,7 @@ import {
   getApiErrorStatus,
 } from '../../utils/aiReliability.ts';
 import {
+  computeExtractionFieldDiffs,
   extractTrackedFieldValues,
   isProtectedVerifiedRecord,
   planEquipmentExtractionMerge,
@@ -43,9 +65,12 @@ import {
 } from '../../utils/equipmentProtection.ts';
 import {
   getDirection,
+  getTranslations,
   loadLanguage,
+  ltr,
   normalizeLanguage,
 } from '../../i18n/translations.ts';
+import { jsPDF } from 'jspdf';
 import type { EquipmentSpec, SolarProject } from '../../types/mithaq.ts';
 
 function makePv(overrides: Partial<EquipmentSpec> = {}): EquipmentSpec {
@@ -1363,4 +1388,182 @@ describe('Arabic-First Defaults, RTL Direction & Arabic PDF Verification', () =>
     }
   });
 });
+
+describe('Regression Suite — Arabic PDF BiDi/Shaping, RTL Localization & Threshold Preservation', () => {
+  it('configures jsPDF raw text options to prevent double-reordering and symmetric bracket swaps', () => {
+    assert.deepEqual(PDF_RAW_TEXT_OPTIONS, {
+      isInputVisual: true,
+      isOutputVisual: true,
+      isInputRtl: false,
+      isOutputRtl: false,
+      isSymmetricSwapping: false,
+    });
+
+    const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+    registerArabicFont(doc);
+    doc.setFont('DejaVuSans', 'normal');
+    doc.setFontSize(9);
+
+    const mixedSamples = [
+      `اختبار ${ltr('(PV)')} بنسبة ${ltr('(6.9%)')} مع ${ltr('-0.64 kWp')} و ${ltr('40 W')}`,
+      `الحد المسموح: ${ltr('0.75 – 1.35')} (فشل: ${ltr('>\u00A01.50')})`,
+      `الفرق المتوقع ${ltr('(-50 V)')} في ${ltr('MPPT')}`,
+    ];
+
+    for (const sample of mixedSamples) {
+      const single = prepareRtlSingleLine(doc, sample);
+      const wrapped = prepareRtlLines(doc, sample, 45);
+      for (const line of [single, ...wrapped]) {
+        assert.ok(!/[\u202A-\u202E\u2066-\u2069]/.test(line), `Leaked BiDi control char in: ${line}`);
+        assert.ok(!line.includes('{') && !line.includes('}'), `Unexpected curly brace swap in: ${line}`);
+      }
+      assert.ok(single.includes('(PV)') || wrapped.join(' ').includes('(PV)') || !sample.includes('(PV)'));
+      if (sample.includes('0.75')) {
+        assert.ok(single.includes('0.75 – 1.35'), `Lost ratio range in: ${single}`);
+        assert.ok(single.includes('1.50'), `Lost 1.50 threshold in: ${single}`);
+      }
+    }
+
+    // Pure LTR formula stays strictly LTR
+    const pureFormula = 'ratio = P_pv_dc / P_inv_ac';
+    assert.equal(toVisualRtlLine(pureFormula), pureFormula);
+  });
+
+  it('keeps shaped autoTable header lines idempotent across multi-page redraws', () => {
+    const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+    registerArabicFont(doc);
+    doc.setFont('DejaVuSans', 'bold');
+    doc.setFontSize(8);
+
+    const rawHeaders = ['الفحص الهندسي', 'النتيجة', 'المعادلة', 'القيمة المحسوبة', 'الحد المسموح'];
+    const shaped = shapeCellTextForAutoTable(doc, rawHeaders);
+    const pass1 = finalizeRtlAutoTableLines([...shaped]);
+    const pass2 = finalizeRtlAutoTableLines([...shaped]);
+
+    assert.deepEqual(pass1, pass2);
+    for (let i = 0; i < pass1.length; i++) {
+      assert.ok(containsArabic(pass1[i]));
+      assert.ok(!/[\u202A-\u202E\u2066-\u2069]/.test(pass1[i]));
+    }
+  });
+
+  it('renders all 4 pages for default mismatch Arabic PDF without duplicate-parenthesis bug', () => {
+    const arTr = getTranslations('ar');
+    assert.ok(!arTr.common.simDataBannerBody.includes('(({customer}))'));
+    assert.ok(!arTr.pdf.gapBItemWithBlocks.includes('->'));
+
+    const demo = createDemoProject();
+    const { doc } = buildProjectPdfDocument(demo, 'ar');
+    assert.equal(doc.getNumberOfPages(), 4);
+
+    // Ensure raw stored project model was NOT mutated by PDF display localization
+    assert.equal(demo.customerName, 'Al-Noor Commercial Cold Storage (Simulated Demo)');
+    assert.equal(demo.location, 'Riyadh Industrial Zone II');
+  });
+
+  it('localizes simulated markers, audit summary methodology formula, category fields, and extraction diffs in Arabic', () => {
+    const demo = createDemoProject();
+    const pv = demo.installedEquipment.find((e) => e.category === 'PV_MODULE')!;
+    const arReasons = detectSimulatedMarkers(pv, true, 'ar');
+    const enReasons = detectSimulatedMarkers(pv, true, 'en');
+    assert.ok(arReasons.length > 0 && arReasons.every((r) => containsArabic(r)));
+    assert.ok(enReasons.length > 0 && enReasons.every((r) => !containsArabic(r)));
+
+    const compsAr = comparePromisedVsInstalled(demo, 'ar');
+    const checksAr = runEngineeringValidation(demo, 'ar');
+    const summaryAr = computeAuditSummary(compsAr, checksAr, 'ar');
+    assert.ok(containsArabic(summaryAr.equipmentMatchFormula));
+    assert.ok(summaryAr.equipmentMatchFormula.includes('المعايير المتطابقة'));
+
+    // Unreadable label localization handles parenthetical and verbose AI strings
+    const localizedVocCoeff = localizeCategoryFieldText(
+      'PV_MODULE',
+      'Voc Temperature Coefficient (not printed on module nameplate)',
+      'ar',
+    );
+    const localizedImpLimit = localizeCategoryFieldText(
+      'INVERTER',
+      'Max PV Operating Current (Imp limit) not printed on nameplate',
+      'ar',
+    );
+    assert.ok(containsArabic(localizedVocCoeff) && localizedVocCoeff !== 'Voc Temperature Coefficient (not printed on module nameplate)');
+    assert.ok(containsArabic(localizedImpLimit) && localizedImpLimit !== 'Max PV Operating Current (Imp limit) not printed on nameplate');
+
+    // Extraction diff localization translates Quantity, Missing, units, and field labels
+    const existingVerified = makePv({ manufacturer: 'Jinko Solar', quantity: 16, provenance: 'USER_VERIFIED' });
+    const incomingAi = makePv({ manufacturer: 'Longi', quantity: 14, tempCoeffVocPctPerC: null, provenance: 'AI_EXTRACTED' });
+    const diffsAr = computeExtractionFieldDiffs(existingVerified, incomingAi, 'ar');
+    const qtyDiff = diffsAr.find((d) => d.key === 'quantity');
+    const tempDiff = diffsAr.find((d) => d.key === 'tempCoeffVocPctPerC');
+    assert.ok(qtyDiff && containsArabic(qtyDiff.label) && qtyDiff.existingValue.includes('وحدة'));
+    assert.ok(tempDiff && containsArabic(tempDiff.proposedValue));
+
+    const plan = planEquipmentExtractionMerge([existingVerified], [incomingAi], false, 'ar');
+    assert.equal(plan.conflicts.length, 1);
+    assert.ok(plan.conflicts[0].changedFields.some((f) => containsArabic(f.label)));
+  });
+
+  it('localizes demo project display strings in Arabic while preserving custom non-demo text untouched', () => {
+    assert.ok(containsArabic(localizeDemoCustomerName('Al-Noor Commercial Cold Storage (Simulated Demo)', 'ar')));
+    assert.equal(
+      localizeDemoCustomerName('Al-Noor Commercial Cold Storage (Simulated Demo)', 'en'),
+      'Al-Noor Commercial Cold Storage (Simulated Demo)',
+    );
+    assert.equal(localizeDemoCustomerName('Custom Factory Solar Audit', 'ar'), 'Custom Factory Solar Audit');
+
+    assert.ok(containsArabic(localizeDemoLocation('Riyadh Industrial Zone II', 'ar')));
+    assert.ok(containsArabic(localizeDemoManufacturer('Unbranded / OEM', 'ar') ?? ''));
+    assert.equal(localizeDemoManufacturer('Huawei', 'ar'), 'Huawei');
+    assert.ok(containsArabic(localizeDemoAdditionalSpecs('10 kW Hybrid Inverter, IP65 enclosure', 'ar') ?? ''));
+    assert.ok(containsArabic(localizeDemoUncertainField('Manufacturer brand omitted on metallic plate', 'ar')));
+    assert.ok(containsArabic(localizeDemoMeasurementParam('Measured Battery Bank DC Voltage', 'ar')));
+    assert.ok(containsArabic(localizeDemoMeasurementTech('Eng. Tariq Al-Mansoor', 'ar')));
+    assert.ok(
+      containsArabic(
+        localizeDemoMeasurementNotes(
+          'Two US5000 battery modules connected in parallel; third rack slot unpopulated.',
+          'ar',
+        ),
+      ),
+    );
+  });
+
+  it('preserves exact deterministic DC/AC ratio thresholds (0.75, 1.35, 1.50) across EN and AR', () => {
+    const buildRatioCase = (pvW: number, qty: number, invW: number) =>
+      makeBaseProject({
+        installedEquipment: [
+          makePv({ ratedPowerW: pvW, quantity: qty }),
+          makeInverter({ ratedPowerW: invW, quantity: 1 }),
+          makeBattery(),
+        ],
+        arrayConfig: {
+          modulesPerString: qty,
+          parallelStrings: 1,
+          minAmbientTempC: 10,
+          stcTempC: 25,
+          provenance: 'USER_VERIFIED',
+        },
+      });
+
+    // 8000 W / 10000 W = 0.80 -> PASS (within [0.75, 1.35])
+    const passChecksAr = runEngineeringValidation(buildRatioCase(500, 16, 10000), 'ar');
+    const passDcAc = passChecksAr.find((c) => c.id === 'check-dc-ac-ratio')!;
+    assert.equal(passDcAc.calculatedValue, 0.8);
+    assert.equal(passDcAc.status, 'PASS');
+    assert.ok(passDcAc.limitValue.includes('0.75') && passDcAc.limitValue.includes('1.35') && passDcAc.limitValue.includes('1.50'));
+
+    // 14500 W / 10000 W = 1.45 -> WARNING (> 1.35 and <= 1.50)
+    const warnChecksAr = runEngineeringValidation(buildRatioCase(500, 29, 10000), 'ar');
+    const warnDcAc = warnChecksAr.find((c) => c.id === 'check-dc-ac-ratio')!;
+    assert.equal(warnDcAc.calculatedValue, 1.45);
+    assert.equal(warnDcAc.status, 'WARNING');
+
+    // 15500 W / 10000 W = 1.55 -> FAIL (> 1.50)
+    const failChecksAr = runEngineeringValidation(buildRatioCase(500, 31, 10000), 'ar');
+    const failDcAc = failChecksAr.find((c) => c.id === 'check-dc-ac-ratio')!;
+    assert.equal(failDcAc.calculatedValue, 1.55);
+    assert.equal(failDcAc.status, 'FAIL');
+  });
+});
+
 

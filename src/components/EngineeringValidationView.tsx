@@ -7,6 +7,8 @@ import {
 import { useI18n } from '../i18n/I18nContext';
 import { fmt } from '../i18n/translations';
 import type { ArrayConfiguration, SolarProject } from '../types/mithaq';
+import { localizeDemoCustomerName } from '../utils/demoLocalization';
+import { containsArabic } from '../utils/pdfRtl';
 import { InputConfidenceBadge, StatusIndicator } from './StatusBadge';
 
 interface EngineeringValidationViewProps {
@@ -25,7 +27,7 @@ export function EngineeringValidationView({
   project,
   onUpdateProject,
 }: EngineeringValidationViewProps) {
-  const { lang, tr: t } = useI18n();
+  const { lang, dir, tr: t } = useI18n();
   const checks = runEngineeringValidation(project, lang);
   const cfg = project.arrayConfig;
 
@@ -50,7 +52,9 @@ export function EngineeringValidationView({
           <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
           <span>
             <span className="font-semibold">{t.common.simDataBannerTitle}</span>{' '}
-            {fmt(t.common.simDataBannerBody, { customer: project.customerName })}
+            {fmt(t.common.simDataBannerBody, {
+              customer: localizeDemoCustomerName(project.customerName, lang),
+            })}
           </span>
         </div>
       )}
@@ -212,7 +216,10 @@ export function EngineeringValidationView({
                   </div>
                   <div className="text-xs text-slate-600 mt-1 font-mono tabular-nums">
                     {ck.limitLabel}:{' '}
-                    <span dir="ltr" className="font-semibold inline-block">
+                    <span
+                      dir={containsArabic(ck.limitValue) ? dir : 'ltr'}
+                      className="font-semibold inline-block"
+                    >
                       {ck.limitValue}
                     </span>
                   </div>
@@ -225,8 +232,8 @@ export function EngineeringValidationView({
                 {ck.missingInputs.length > 0 && (
                   <div className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded p-2">
                     <span className="font-semibold">{t.validation.missingInputsLabel}</span>{' '}
-                    <span dir="ltr" className="inline-block">
-                      {ck.missingInputs.join(', ')}
+                    <span dir={dir} className="inline-block">
+                      {ck.missingInputs.join(lang === 'ar' ? '، ' : ', ')}
                     </span>
                   </div>
                 )}

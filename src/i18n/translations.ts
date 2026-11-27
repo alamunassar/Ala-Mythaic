@@ -1,4 +1,5 @@
 import type {
+  ComparisonEligibility,
   ComparisonStatus,
   DataProvenance,
   EngineeringCheckStatus,
@@ -50,11 +51,11 @@ export function fmt(template: string, vars: Record<string, string | number>): st
 }
 
 /**
- * Wraps LTR technical snippets (equations, model codes, units, numbers) with Unicode LRE/PDF
- * when embedding inside Arabic RTL strings so PDF BiDi & DOM rendering keep token order intact.
+ * Wraps LTR technical snippets (equations, model codes, units, numbers) with Unicode LRI/PDI isolates
+ * when embedding inside Arabic RTL strings so PDF BiDi & DOM rendering keep adjacent spans isolated.
  */
 export function ltr(text: string | number): string {
-  return `\u202A${text}\u202C`;
+  return `\u2066${text}\u2069`;
 }
 
 export interface TranslationDictionary {
@@ -109,6 +110,7 @@ export interface TranslationDictionary {
     verificationBoundaryBody: string;
     yes: string;
     no: string;
+    na: string;
   };
   scenarios: {
     sidebarTitle: string;
@@ -406,6 +408,7 @@ export interface TranslationDictionary {
     sectionCTitle: string;
     sectionCEmpty: string;
     needsPrefix: string;
+    eligibilityLabels: Record<ComparisonEligibility, string>;
   };
   validation: {
     stepTitle: string;
@@ -435,6 +438,9 @@ export interface TranslationDictionary {
     stepSubtitle: string;
     telemetryBadge: string;
     calcRefLabel: string;
+    calcRefVoc: string;
+    calcRefImp: string;
+    calcRefIsc: string;
     paramLabel: string;
     valueLabel: string;
     unitAria: string;
@@ -481,6 +487,7 @@ export interface TranslationDictionary {
     snapFailedChecks: string;
     snapInsufficientChecks: string;
     snapFieldMeas: string;
+    passConfidenceFormat: string;
     formulaPrefix: string;
   };
   settings: {
@@ -632,6 +639,7 @@ export const TRANSLATIONS: Record<Language, TranslationDictionary> = {
         'A PASS result confirms only that the entered equipment ratings and array configuration mathematically satisfy the stated limit checks. Verified manufacturer ratings and PASS outcomes do not certify electrical safety, installation workmanship, local electrical code compliance, or replace a licensed professional inspection.',
       yes: 'Yes',
       no: 'No',
+      na: 'N/A',
     },
     scenarios: {
       sidebarTitle: 'Demo Scenarios',
@@ -1016,6 +1024,12 @@ export const TRANSLATIONS: Record<Language, TranslationDictionary> = {
       sectionCTitle: 'C. Engineering Checks Blocked ({count})',
       sectionCEmpty: 'No engineering checks blocked.',
       needsPrefix: 'Needs:',
+      eligibilityLabels: {
+        ELIGIBLE: 'ELIGIBLE',
+        UNQUOTED_INSTALLED: 'Unquoted Installed',
+        MISSING_INSTALLED: 'Missing Installed',
+        NO_RECORDS: 'No Records',
+      },
     },
     validation: {
       stepTitle: 'Step 5 — Independent Deterministic Engineering Validation',
@@ -1048,6 +1062,9 @@ export const TRANSLATIONS: Record<Language, TranslationDictionary> = {
         'Record on-site multimeter or clamp-meter readings. Field measurements are stored separately from calculated STC values and are never synthesized automatically.',
       telemetryBadge: 'Manual Site Telemetry Log',
       calcRefLabel: 'Calculated Reference (STC):',
+      calcRefVoc: 'String Voc = {val} V',
+      calcRefImp: 'Parallel Imp = {val} A',
+      calcRefIsc: 'Parallel Isc = {val} A',
       paramLabel: 'Measurement Parameter',
       valueLabel: 'Measured Value',
       unitAria: 'Measurement unit',
@@ -1112,6 +1129,7 @@ export const TRANSLATIONS: Record<Language, TranslationDictionary> = {
       snapFailedChecks: 'Failed Eng. Checks:',
       snapInsufficientChecks: 'Blocked (Insufficient Data):',
       snapFieldMeas: 'Field Measurements:',
+      passConfidenceFormat: '{total} ({verified}V / {simulated}S / {unverified}U)',
       formulaPrefix: 'Formula:',
     },
     settings: {
@@ -1271,7 +1289,7 @@ export const TRANSLATIONS: Record<Language, TranslationDictionary> = {
       simDataBannerTitle: 'تنبيه وجود بيانات تجريبية / محاكاة:',
       simDataBannerDemoTitle: 'المشروع التجريبي بالمحاكاة نشط:',
       simDataBannerBody:
-        'تتضمن السجلات المعروضة للعميل ({customer}) بيانات افتراضية أو نموذجية، ولا يجوز اعتبارها معدات ميدانية فعلية موثقة.',
+        'تتضمن السجلات المعروضة للعميل {customer} بيانات افتراضية أو نموذجية، ولا يجوز اعتبارها معدات ميدانية فعلية موثقة.',
       createRealProject: 'إنشاء مشروع فعلي',
       preserved: 'محفوظ',
       notReadable: 'غير مقروء',
@@ -1280,6 +1298,7 @@ export const TRANSLATIONS: Record<Language, TranslationDictionary> = {
         'نتيجة "ناجح" تؤكد رياضياً فقط أن القيم الاسمية المدخلة وتكوين المصفوفة يستوفيان حدود الفحص المذكورة. القيم الموثقة ونتائج النجاح الحسابية لا تمنح شهادة أمان كهربائي أو مطابقة لكود البناء، ولا تغني عن الفحص الميداني لمهندس كهرباء مرخص.',
       yes: 'نعم',
       no: 'لا',
+      na: 'غير متاح',
     },
     scenarios: {
       sidebarTitle: 'سيناريوهات تجريبية',
@@ -1659,6 +1678,12 @@ export const TRANSLATIONS: Record<Language, TranslationDictionary> = {
       sectionCTitle: 'ج. الفحوصات الهندسية المتوقفة ({count})',
       sectionCEmpty: 'لا توجد فحوصات هندسية متوقفة.',
       needsPrefix: 'يتطلب:',
+      eligibilityLabels: {
+        ELIGIBLE: 'مؤهل',
+        UNQUOTED_INSTALLED: 'مركب بدون عرض سعر',
+        MISSING_INSTALLED: 'موعود ولم يوثق تركيبه',
+        NO_RECORDS: 'لا توجد سجلات',
+      },
     },
     validation: {
       stepTitle: 'الخطوة 5 — التحقق الهندسي الحتمي المستقل',
@@ -1691,6 +1716,9 @@ export const TRANSLATIONS: Record<Language, TranslationDictionary> = {
         'سجل قراءات جهاز القياس المتعدد أو الكلامب ميتر في الموقع. تُحفظ القياسات الميدانية بشكل منفصل عن قيم STC المحسوبة ولا يتم توليدها آلياً أبداً.',
       telemetryBadge: 'سجل القياس الميداني اليدوي',
       calcRefLabel: 'المرجع المحسوب (STC):',
+      calcRefVoc: 'جهد السلسلة (Voc) = {val}',
+      calcRefImp: 'تيار التشغيل المتوازي (Imp) = {val}',
+      calcRefIsc: 'تيار القصر المتوازي (Isc) = {val}',
       paramLabel: 'معامل القياس',
       valueLabel: 'القيمة المقاسة',
       unitAria: 'وحدة القياس',
@@ -1755,6 +1783,7 @@ export const TRANSLATIONS: Record<Language, TranslationDictionary> = {
       snapFailedChecks: 'فحوصات فاشلة:',
       snapInsufficientChecks: 'فحوصات متوقفة (نقص بيانات):',
       snapFieldMeas: 'القياسات الميدانية:',
+      passConfidenceFormat: '{total} ({verified} موثق / {simulated} محاكاة / {unverified} غير موثق)',
       formulaPrefix: 'المعادلة:',
     },
     settings: {
@@ -1858,7 +1887,7 @@ export const TRANSLATIONS: Record<Language, TranslationDictionary> = {
       gapUvItem: 'سجل غير مؤكد: {item}',
       gapBHeading: 'ب. المعايير الفنية المفقودة - بدون تكرار ({count}):',
       gapBNone: 'ب. المعايير الفنية المفقودة: لا توجد.',
-      gapBItemWithBlocks: '{param} [{missingOn}] -> يعيق: {blocks}',
+      gapBItemWithBlocks: '{param} [{missingOn}] — يعيق: {blocks}',
       gapCHeading: 'ج. الفحوصات الهندسية المتوقفة بسبب نقص البيانات ({count}):',
       gapCNone: 'ج. الفحوصات الهندسية المتوقفة: لا توجد.',
       gapCItem: '{title} (المفقود: {inputs})',

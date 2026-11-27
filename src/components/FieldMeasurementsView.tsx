@@ -2,8 +2,13 @@ import React, { useEffect, useState } from 'react';
 import { ClipboardCheck, Plus, Trash2 } from 'lucide-react';
 import { runEngineeringValidation } from '../engine/engineeringEngine';
 import { useI18n } from '../i18n/I18nContext';
-import { fmt, TRANSLATIONS } from '../i18n/translations';
+import { fmt, ltr, TRANSLATIONS } from '../i18n/translations';
 import type { FieldMeasurement, SolarProject } from '../types/mithaq';
+import {
+  localizeDemoMeasurementNotes,
+  localizeDemoMeasurementParam,
+  localizeDemoMeasurementTech,
+} from '../utils/demoLocalization';
 
 interface FieldMeasurementsViewProps {
   project: SolarProject;
@@ -110,9 +115,27 @@ export function FieldMeasurementsView({
         {(calcVoc !== null || calcIsc !== null || calcImp !== null) && (
           <div className="mt-4 bg-slate-50 border border-slate-200 rounded-md p-3 text-xs text-slate-700 flex flex-wrap gap-4 font-mono tabular-nums">
             <span>{t.measurements.calcRefLabel}</span>
-            {calcVoc !== null && <span dir="ltr">String Voc = {calcVoc} V</span>}
-            {calcImp !== null && <span dir="ltr">Parallel Imp = {calcImp} A</span>}
-            {calcIsc !== null && <span dir="ltr">Parallel Isc = {calcIsc} A</span>}
+            {calcVoc !== null && (
+              <span>
+                {fmt(t.measurements.calcRefVoc, {
+                  val: lang === 'ar' ? ltr(`${calcVoc} V`) : `${calcVoc} V`,
+                })}
+              </span>
+            )}
+            {calcImp !== null && (
+              <span>
+                {fmt(t.measurements.calcRefImp, {
+                  val: lang === 'ar' ? ltr(`${calcImp} A`) : `${calcImp} A`,
+                })}
+              </span>
+            )}
+            {calcIsc !== null && (
+              <span>
+                {fmt(t.measurements.calcRefIsc, {
+                  val: lang === 'ar' ? ltr(`${calcIsc} A`) : `${calcIsc} A`,
+                })}
+              </span>
+            )}
           </div>
         )}
 
@@ -182,6 +205,7 @@ export function FieldMeasurementsView({
                 {t.measurements.techNameLabel}
               </label>
               <input
+                dir="auto"
                 type="text"
                 value={technicianName}
                 onChange={(e) => setTechnicianName(e.target.value)}
@@ -195,6 +219,7 @@ export function FieldMeasurementsView({
                 {t.measurements.notesLabel}
               </label>
               <input
+                dir="auto"
                 type="text"
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
@@ -245,36 +270,44 @@ export function FieldMeasurementsView({
                   </td>
                 </tr>
               ) : (
-                project.fieldMeasurements.map((m) => (
-                  <tr key={m.id}>
-                    <td className="py-3 px-4 font-medium text-slate-900">{m.parameter}</td>
-                    <td
-                      dir="ltr"
-                      className="py-3 px-4 font-mono tabular-nums font-semibold text-slate-900 whitespace-nowrap text-start"
-                    >
-                      {m.value} {m.unit}
-                    </td>
-                    <td className="py-3 px-4 whitespace-nowrap">
-                      {m.isSimulated ? (
-                        <span className="text-amber-800 font-medium">
-                          {t.measurements.simulatedReading}
-                        </span>
-                      ) : (
-                        <span className="text-slate-700 font-medium">
-                          {t.measurements.manualEntry}
-                        </span>
-                      )}
-                    </td>
-                    <td
-                      dir="ltr"
-                      className="py-3 px-4 font-mono tabular-nums text-slate-600 whitespace-nowrap text-start"
-                    >
-                      {m.measuredAt.replace('T', ' ')}
-                    </td>
-                    <td className="py-3 px-4 text-slate-800 whitespace-nowrap">
-                      {m.technicianName}
-                    </td>
-                    <td className="py-3 px-4 text-slate-600">{m.notes || '—'}</td>
+                project.fieldMeasurements.map((m) => {
+                  const displayParam = localizeDemoMeasurementParam(m.parameter, lang);
+                  const displayTech = localizeDemoMeasurementTech(m.technicianName, lang);
+                  const displayNotes = m.notes ? localizeDemoMeasurementNotes(m.notes, lang) : '';
+                  return (
+                    <tr key={m.id}>
+                      <td dir="auto" className="py-3 px-4 font-medium text-slate-900">
+                        {displayParam}
+                      </td>
+                      <td
+                        dir="ltr"
+                        className="py-3 px-4 font-mono tabular-nums font-semibold text-slate-900 whitespace-nowrap text-start"
+                      >
+                        {m.value} {m.unit}
+                      </td>
+                      <td className="py-3 px-4 whitespace-nowrap">
+                        {m.isSimulated ? (
+                          <span className="text-amber-800 font-medium">
+                            {t.measurements.simulatedReading}
+                          </span>
+                        ) : (
+                          <span className="text-slate-700 font-medium">
+                            {t.measurements.manualEntry}
+                          </span>
+                        )}
+                      </td>
+                      <td
+                        dir="ltr"
+                        className="py-3 px-4 font-mono tabular-nums text-slate-600 whitespace-nowrap text-start"
+                      >
+                        {m.measuredAt.replace('T', ' ')}
+                      </td>
+                      <td dir="auto" className="py-3 px-4 text-slate-800 whitespace-nowrap">
+                        {displayTech}
+                      </td>
+                      <td dir="auto" className="py-3 px-4 text-slate-600">
+                        {displayNotes || '—'}
+                      </td>
                     <td className="py-3 px-4 text-end">
                       <button
                         type="button"
@@ -286,7 +319,8 @@ export function FieldMeasurementsView({
                       </button>
                     </td>
                   </tr>
-                ))
+                    );
+                  })
               )}
             </tbody>
           </table>

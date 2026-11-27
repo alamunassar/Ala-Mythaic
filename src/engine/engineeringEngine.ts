@@ -1,5 +1,6 @@
 import { getTranslations, ltr, type Language } from '../i18n/translations';
 import { localizeCategoryFieldText } from '../utils/categorySpecs';
+import { localizeDemoManufacturer } from '../utils/demoLocalization';
 import type {
   ArrayConfiguration,
   AuditSummary,
@@ -56,34 +57,58 @@ export function normalizeProvenance(raw: string | null | undefined): DataProvena
 export function detectSimulatedMarkers(
   spec: Partial<EquipmentSpec> | undefined | null,
   projectIsDemo = false,
+  lang: Language = 'en',
 ): string[] {
+  const isAr = lang === 'ar';
+  const t = <T>(en: T, ar: T): T => (isAr ? ar : en);
   const reasons: string[] = [];
   if (projectIsDemo) {
-    reasons.push('Project is flagged as a demonstration project');
+    reasons.push(
+      t(
+        'Project is flagged as a demonstration project',
+        'المشروع مصنف كمشروع تجريبي بالمحاكاة',
+      ),
+    );
   }
   if (!spec) return reasons;
 
   if (spec.provenance === 'SIMULATED' || (spec.provenance as string) === 'SIMULATED_DEMO') {
-    reasons.push('Record provenance is marked SIMULATED');
+    reasons.push(
+      t(
+        'Record provenance is marked SIMULATED',
+        'مصدر السجل موسوم كبيانات محاكاة (SIMULATED)',
+      ),
+    );
   }
   if (typeof spec.id === 'string' && spec.id.startsWith('demo-')) {
-    reasons.push('Demonstration record identifier');
+    reasons.push(t('Demonstration record identifier', 'معرّف سجل تجريبي للمحاكاة'));
   }
   if (typeof spec.model === 'string' && SIMULATED_MODEL_REGEX.test(spec.model)) {
-    reasons.push(`Model "${spec.model.trim()}" is a simulated demonstration model`);
+    const trimmedModel = spec.model.trim();
+    reasons.push(
+      t(
+        `Model "${trimmedModel}" is a simulated demonstration model`,
+        `الطراز "${isAr ? ltr(trimmedModel) : trimmedModel}" هو طراز محاكاة تجريبي`,
+      ),
+    );
   }
 
-  const textFields: Array<{ label: string; value: string | null | undefined }> = [
-    { label: 'Technical notes', value: spec.additionalSpecs },
-    { label: 'Manufacturer', value: spec.manufacturer },
-    { label: 'Model', value: spec.model },
-    { label: 'Serial number', value: spec.serialNumber },
-    { label: 'Datasheet reference', value: spec.datasheetFileName },
+  const textFields: Array<{ enLabel: string; arLabel: string; value: string | null | undefined }> = [
+    { enLabel: 'Technical notes', arLabel: 'الملاحظات الفنية', value: spec.additionalSpecs },
+    { enLabel: 'Manufacturer', arLabel: 'الشركة المصنعة', value: spec.manufacturer },
+    { enLabel: 'Model', arLabel: 'الطراز', value: spec.model },
+    { enLabel: 'Serial number', arLabel: 'الرقم التسلسلي', value: spec.serialNumber },
+    { enLabel: 'Datasheet reference', arLabel: 'مرجع النشرة الفنية', value: spec.datasheetFileName },
   ];
 
   for (const field of textFields) {
     if (typeof field.value === 'string' && SIMULATED_TEXT_REGEX.test(field.value)) {
-      reasons.push(`${field.label} contains simulated/demo/prototype marker`);
+      reasons.push(
+        t(
+          `${field.enLabel} contains simulated/demo/prototype marker`,
+          `حقل ${field.arLabel} يحتوي على مؤشر محاكاة / تجريبي / نموذج أولي`,
+        ),
+      );
     }
   }
 
@@ -245,10 +270,16 @@ function formatNum(value: number | null | undefined, unit = '', lang: Language =
   return lang === 'ar' ? ltr(`${value} ${unit}`) : `${value} ${unit}`;
 }
 
+function formatDisplayText(text: string, lang: Language): string {
+  if (lang !== 'ar') return text;
+  return /[\u0600-\u06FF]/.test(text) ? text : ltr(text);
+}
+
 function summarizeSpec(spec: EquipmentSpec | undefined, lang: Language = 'en'): string {
   if (!spec) return lang === 'ar' ? 'لا يوجد سجل' : 'No record provided';
   const parts: string[] = [];
-  if (spec.manufacturer) parts.push(lang === 'ar' ? ltr(spec.manufacturer) : spec.manufacturer);
+  const mfg = localizeDemoManufacturer(spec.manufacturer, lang);
+  if (mfg) parts.push(formatDisplayText(mfg, lang));
   if (spec.model) parts.push(lang === 'ar' ? ltr(spec.model) : spec.model);
   if (spec.ratedPowerW !== null) {
     parts.push(lang === 'ar' ? ltr(`${spec.ratedPowerW} W`) : `${spec.ratedPowerW} W`);
@@ -388,12 +419,14 @@ export function comparePromisedVsInstalled(
       const pMfg = normalizeText(p.manufacturer);
       const iMfg = normalizeText(inst.manufacturer);
       const missingStr = t('Missing', 'مفقود');
+      const pMfgDisplay = p.manufacturer ? localizeDemoManufacturer(p.manufacturer, lang) : null;
+      const iMfgDisplay = inst.manufacturer ? localizeDemoManufacturer(inst.manufacturer, lang) : null;
       if (!pMfg || !iMfg) {
         missingFields.push(t('Manufacturer', 'الشركة المصنعة'));
         differences.push({
           field: t('Manufacturer', 'الشركة المصنعة'),
-          promised: pMfg && p.manufacturer ? (isAr ? ltr(p.manufacturer) : p.manufacturer) : missingStr,
-          installed: iMfg && inst.manufacturer ? (isAr ? ltr(inst.manufacturer) : inst.manufacturer) : missingStr,
+          promised: pMfg && pMfgDisplay ? formatDisplayText(pMfgDisplay, lang) : missingStr,
+          installed: iMfg && iMfgDisplay ? formatDisplayText(iMfgDisplay, lang) : missingStr,
           status: 'NOT VERIFIED',
           note: t(
             'Manufacturer is missing on quotation or installed record.',
@@ -403,8 +436,8 @@ export function comparePromisedVsInstalled(
       } else if (pMfg !== iMfg && !pMfg.includes(iMfg) && !iMfg.includes(pMfg)) {
         differences.push({
           field: t('Manufacturer', 'الشركة المصنعة'),
-          promised: isAr ? ltr(p.manufacturer!) : p.manufacturer!,
-          installed: isAr ? ltr(inst.manufacturer!) : inst.manufacturer!,
+          promised: formatDisplayText(pMfgDisplay!, lang),
+          installed: formatDisplayText(iMfgDisplay!, lang),
           status: 'MISMATCH',
           note: t(
             'Observed nameplate manufacturer differs from the quotation.',
@@ -414,8 +447,8 @@ export function comparePromisedVsInstalled(
       } else {
         differences.push({
           field: t('Manufacturer', 'الشركة المصنعة'),
-          promised: isAr ? ltr(p.manufacturer!) : p.manufacturer!,
-          installed: isAr ? ltr(inst.manufacturer!) : inst.manufacturer!,
+          promised: formatDisplayText(pMfgDisplay!, lang),
+          installed: formatDisplayText(iMfgDisplay!, lang),
           status: 'MATCH',
           note: t('Manufacturer matches quotation.', 'الشركة المصنعة مطابقة لعرض السعر.'),
         });
@@ -1261,7 +1294,7 @@ export function runEngineeringValidation(
         status = 'WARNING';
         explanation = t(
           `String Vmp (${vmpString} V) is within 8% of the MPPT window edge (${mpptMinV}–${mpptMaxV} V); high cell temperatures may reduce tracking efficiency.`,
-          `جهد التشغيل للسلسلة (${ltr(`${vmpString} V`)}) قريب بنسبة 8% من حافة نطاق MPPT (${ltr(`${mpptMinV}–${mpptMaxV} V`)})؛ قد تقلل حرارة الخلايا العالية كفاءة التتبع.`,
+          `جهد التشغيل للسلسلة (${ltr(`${vmpString} V`)}) قريب بنسبة ${ltr('8%')} من حافة نطاق MPPT (${ltr(`${mpptMinV}–${mpptMaxV} V`)})؛ قد تقلل حرارة الخلايا العالية كفاءة التتبع.`,
         );
       }
       checks.push(
@@ -1540,7 +1573,7 @@ export function runEngineeringValidation(
           calculatedValue: null,
           calculatedUnit: t('ratio', 'نسبة'),
           limitLabel: t('Recommended Sizing Window', 'نطاق التحجيم الموصى به'),
-          limitValue: isAr ? ltr('0.75 – 1.35 (Max 1.50)') : '0.75 – 1.35 (Max 1.50)',
+          limitValue: isAr ? `${ltr('0.75 – 1.35')} (الحد الأقصى ${ltr('1.50')})` : '0.75 – 1.35 (Max 1.50)',
           missingInputs:
             missing.length > 0
               ? missing
@@ -1607,7 +1640,7 @@ export function runEngineeringValidation(
           calculatedValue: ratio,
           calculatedUnit: 'DC/AC',
           limitLabel: t('Engineering Sizing Range', 'نطاق التحجيم الهندسي'),
-          limitValue: isAr ? `${ltr('0.75 – 1.35')} (فشل ${ltr('> 1.50')})` : '0.75 – 1.35 (Fail > 1.50)',
+          limitValue: isAr ? `${ltr('0.75 – 1.35')} (فشل: ${ltr('>\u00A01.50')})` : '0.75 – 1.35 (Fail > 1.50)',
           missingInputs: [],
           explanation,
         }, lang),

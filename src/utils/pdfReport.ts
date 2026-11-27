@@ -21,6 +21,16 @@ import {
 } from '../i18n/translations';
 import type { EquipmentSpec, SolarProject } from '../types/mithaq';
 import {
+  localizeDemoCustomerName,
+  localizeDemoLocation,
+  localizeDemoManufacturer,
+  localizeDemoMeasurementNotes,
+  localizeDemoMeasurementParam,
+  localizeDemoMeasurementTech,
+} from './demoLocalization';
+import {
+  PDF_RAW_TEXT_OPTIONS,
+  containsArabic,
   finalizeRtlAutoTableLines,
   prepareRtlLines,
   prepareRtlSingleLine,
@@ -70,7 +80,7 @@ function fmtSpecLine(
   if (eq.capacityKwh !== null) details.push(`Cap: ${eq.capacityKwh} kWh`);
   if (eq.nominalVoltageV !== null) details.push(`Vnom: ${eq.nominalVoltageV} V`);
   if (eq.minBatteryVoltageV !== null && eq.maxBatteryVoltageV !== null) {
-    details.push(`V_batt_win: ${eq.minBatteryVoltageV}-${eq.maxBatteryVoltageV} V`);
+    details.push(`Vbatt: ${eq.minBatteryVoltageV}-${eq.maxBatteryVoltageV} V`);
   }
   if (eq.vocV !== null) details.push(`Voc: ${eq.vocV} V`);
   if (eq.vmpV !== null) details.push(`Vmp: ${eq.vmpV} V`);
@@ -176,7 +186,7 @@ export function buildProjectPdfDocument(
   const generatedAt = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
   const comparisons = comparePromisedVsInstalled(project, lang);
   const checks = runEngineeringValidation(project, lang);
-  const summary = computeAuditSummary(comparisons, checks);
+  const summary = computeAuditSummary(comparisons, checks, lang);
   const missingReport = buildMissingDataReport(project, comparisons, checks, lang);
   const hasSimulated = projectContainsSimulatedData(project);
 
@@ -192,6 +202,7 @@ export function buildProjectPdfDocument(
   const printableWidth = pageWidth - 28; // 182mm on A4
 
   const fmtCell = (text: string): string => (isRtl ? text : toPdfSafeText(text));
+  const rtlSafeWrap = (text: string): string => (isRtl && !containsArabic(text) ? ltr(text) : text);
 
   const drawSingleText = (
     text: string,
@@ -200,7 +211,11 @@ export function buildProjectPdfDocument(
     options?: { align?: 'left' | 'center' | 'right' },
   ) => {
     const rendered = isRtl ? prepareRtlSingleLine(doc, text) : toPdfSafeText(text);
-    doc.text(rendered, x, y, options);
+    if (isRtl) {
+      doc.text(rendered, x, y, { ...(options ?? {}), ...PDF_RAW_TEXT_OPTIONS });
+    } else {
+      doc.text(rendered, x, y, options);
+    }
   };
 
   const drawSectionHeading = (title: string, y: number) => {
@@ -275,7 +290,8 @@ export function buildProjectPdfDocument(
         overflow: 'linebreak',
         valign: 'top',
         halign: isRtl ? 'right' : 'left',
-      },
+        ...(isRtl ? { textOptions: PDF_RAW_TEXT_OPTIONS } : {}),
+      } as never,
       headStyles: {
         font: fontFamily,
         fontStyle: 'bold',
@@ -283,7 +299,8 @@ export function buildProjectPdfDocument(
         textColor: 255,
         fontSize: opts.headFontSize,
         halign: isRtl ? 'right' : 'left',
-      },
+        ...(isRtl ? { textOptions: PDF_RAW_TEXT_OPTIONS } : {}),
+      } as never,
       columnStyles: mappedColStyles,
       head: orderedHead,
       body: orderedBody,
@@ -301,8 +318,15 @@ export function buildProjectPdfDocument(
         }
       },
       willDrawCell: (data) => {
-        if (isRtl && Array.isArray(data.cell.text)) {
-          data.cell.text = finalizeRtlAutoTableLines(data.cell.text);
+        const cell = data.cell as unknown as {
+          text?: string[];
+          __rtlShapedLines?: string[];
+        };
+        if (isRtl && Array.isArray(cell.text)) {
+          if (!cell.__rtlShapedLines) {
+            cell.__rtlShapedLines = [...cell.text];
+          }
+          cell.text = finalizeRtlAutoTableLines(cell.__rtlShapedLines);
         }
       },
     });
@@ -315,7 +339,7 @@ export function buildProjectPdfDocument(
   doc.setFont(fontFamily, 'bold');
   doc.setFontSize(17);
   if (isRtl) {
-    doc.text('MITHAQ-Lab', pageWidth - 14, 12.5, { align: 'right' });
+    doc.text('MITHAQ-Lab', pageWidth - 14, 12.5, { align: 'right', ...PDF_RAW_TEXT_OPTIONS });
     doc.setFont(fontFamily, 'normal');
     doc.setFontSize(9);
     doc.setTextColor(203, 213, 225);
@@ -372,7 +396,10 @@ export function buildProjectPdfDocument(
       drawSingleText(pdfTr.simBannerTitle, pageWidth - 18, cursorY + 5, { align: 'right' });
       doc.setFont(fontFamily, 'normal');
       doc.setFontSize(7.8);
-      doc.text(wrappedDesc, pageWidth - 18, cursorY + 10.2, { align: 'right' });
+      doc.text(wrappedDesc, pageWidth - 18, cursorY + 10.2, {
+        align: 'right',
+        ...PDF_RAW_TEXT_OPTIONS,
+      });
     } else {
       drawSingleText(pdfTr.simBannerTitle, 18, cursorY + 5);
       doc.setFont(fontFamily, 'normal');
@@ -422,6 +449,9 @@ export function buildProjectPdfDocument(
     notVerified: summary.notVerifiedCount,
   });
 
+  const displayCustomerName = localizeDemoCustomerName(project.customerName, lang);
+  const displayLocation = localizeDemoLocation(project.location, lang);
+
   runTable({
     startY: cursorY,
     theme: 'grid',
@@ -440,13 +470,13 @@ export function buildProjectPdfDocument(
     body: [
       [
         pdfTr.customerName,
-        isRtl ? ltr(project.customerName) : project.customerName,
+        rtlSafeWrap(displayCustomerName),
         pdfTr.overallStatus,
         tr.statuses[summary.overallStatus],
       ],
       [
         pdfTr.projectLocation,
-        isRtl ? ltr(project.location) : project.location,
+        rtlSafeWrap(displayLocation),
         pdfTr.specMatchPct,
         matchPctLabel,
       ],
@@ -455,7 +485,7 @@ export function buildProjectPdfDocument(
         isRtl ? ltr(project.installationDate) : project.installationDate,
         pdfTr.matchMethodology,
         fmt(pdfTr.methodologyDetail, {
-          formula: isRtl ? ltr(summary.equipmentMatchFormula) : summary.equipmentMatchFormula,
+          formula: summary.equipmentMatchFormula,
           matched: summary.matchedParameters,
           mismatched: summary.mismatchedParameters,
           warning: summary.warningParameters,
@@ -545,26 +575,31 @@ export function buildProjectPdfDocument(
 
   const formatEqSource = (eq: EquipmentSpec): string => {
     const prov = resolveEquipmentProvenance(eq, project.isDemo);
-    const simReasons = detectSimulatedMarkers(eq, project.isDemo);
+    const simReasons = detectSimulatedMarkers(eq, project.isDemo, lang);
     const base = formatProvenance(prov, lang);
     const extras: string[] = [];
     if (eq.datasheetFileName) {
       extras.push(fmt(pdfTr.datasheetPrefix, { name: ltr(eq.datasheetFileName) }));
     }
     if (simReasons.length > 0 && prov === 'SIMULATED') {
-      extras.push(isRtl ? ltr(simReasons[0]) : simReasons[0]);
+      extras.push(simReasons[0]);
     }
-    return extras.length > 0 ? `${base}\n(${extras.join('; ')})` : base;
+    return extras.length > 0 ? `${base}\n(${extras.join(isRtl ? '؛ ' : '; ')})` : base;
   };
 
-  const naLabel = isRtl ? 'غير متوفر' : 'N/A';
+  const naLabel = tr.common.na;
+  const fmtEqMfgModel = (eq: EquipmentSpec): string => {
+    const mfgRaw = localizeDemoManufacturer(eq.manufacturer, lang);
+    const mfgStr = mfgRaw ? rtlSafeWrap(mfgRaw) : naLabel;
+    const modStr = eq.model ? rtlSafeWrap(eq.model) : naLabel;
+    return `${mfgStr}\n${modStr}`;
+  };
+
   const eqRows: string[][] = [
     ...project.promisedEquipment.map((eq) => [
       pdfTr.promisedType,
       getCategoryLabel(eq.category, lang),
-      `${eq.manufacturer ? (isRtl ? ltr(eq.manufacturer) : eq.manufacturer) : naLabel}\n${
-        eq.model ? (isRtl ? ltr(eq.model) : eq.model) : naLabel
-      }`,
+      fmtEqMfgModel(eq),
       eq.quantity !== null ? String(eq.quantity) : naLabel,
       fmtSpecLine(eq, pdfTr, isRtl),
       formatEqSource(eq),
@@ -572,9 +607,7 @@ export function buildProjectPdfDocument(
     ...project.installedEquipment.map((eq) => [
       pdfTr.installedType,
       getCategoryLabel(eq.category, lang),
-      `${eq.manufacturer ? (isRtl ? ltr(eq.manufacturer) : eq.manufacturer) : naLabel}\n${
-        eq.model ? (isRtl ? ltr(eq.model) : eq.model) : naLabel
-      }`,
+      fmtEqMfgModel(eq),
       eq.quantity !== null ? String(eq.quantity) : naLabel,
       fmtSpecLine(eq, pdfTr, isRtl),
       formatEqSource(eq),
@@ -588,11 +621,11 @@ export function buildProjectPdfDocument(
     headFontSize: 7.6,
     cellPadding: 1.7,
     colStyles: {
-      0: { cellWidth: 19, fontStyle: 'bold' },
+      0: { cellWidth: 18, fontStyle: 'bold' },
       1: { cellWidth: 24 },
-      2: { cellWidth: 32 },
-      3: { cellWidth: 11, halign: 'center' },
-      4: { cellWidth: 58 },
+      2: { cellWidth: 31 },
+      3: { cellWidth: 15, halign: 'center' },
+      4: { cellWidth: 56 },
       5: { cellWidth: 38 },
     },
     head: pdfTr.sec3Head,
@@ -614,7 +647,7 @@ export function buildProjectPdfDocument(
     : (doc.splitTextToSize(toPdfSafeText(pdfTr.sec4Legend), printableWidth) as string[]);
   const legendLineHeight = isRtl ? 3.8 : 3.3;
   if (isRtl) {
-    doc.text(wrappedLegend, pageWidth - 14, cursorY, { align: 'right' });
+    doc.text(wrappedLegend, pageWidth - 14, cursorY, { align: 'right', ...PDF_RAW_TEXT_OPTIONS });
   } else {
     doc.text(wrappedLegend, 14, cursorY);
   }
@@ -635,7 +668,9 @@ export function buildProjectPdfDocument(
         const expr = isRtl
           ? `${ltr(`${i.symbol} =`)} ${i.value !== null ? ltr(valText) : valText}`
           : `${i.symbol} = ${valText}`;
-        return `${expr} [${roleLabel}${isRtl ? '؛' : ';'} ${i.provenance}]`;
+        const provLabel =
+          i.provenance === 'MISSING' ? tr.common.missing : tr.provenanceShort[i.provenance];
+        return `${expr} [${roleLabel}${isRtl ? '؛' : ';'} ${provLabel}]`;
       })
       .join('\n');
     const resultStr =
@@ -644,7 +679,7 @@ export function buildProjectPdfDocument(
           ? ltr(`${c.calculatedValue} ${c.calculatedUnit}`)
           : `${c.calculatedValue} ${c.calculatedUnit}`
         : tr.common.notComputed;
-    const limitDisplay = isRtl ? ltr(c.limitValue) : c.limitValue;
+    const limitDisplay = rtlSafeWrap(c.limitValue);
     const inputsAndResult = `${inputsLines}\n\n${pdfTr.resultPrefix} ${resultStr}\n${pdfTr.limitPrefix} ${limitDisplay}`;
     const notesStr =
       c.missingInputs.length > 0
@@ -677,13 +712,18 @@ export function buildProjectPdfDocument(
   drawSectionHeading(pdfTr.sec5Title, cursorY);
   cursorY += 3;
 
-  const measRows = project.fieldMeasurements.map((m) => [
-    m.parameter + (m.isSimulated ? ` ${pdfTr.simulatedTag}` : ''),
-    isRtl ? ltr(`${m.value} ${m.unit}`) : `${m.value} ${m.unit}`,
-    isRtl ? ltr(m.measuredAt.replace('T', ' ')) : m.measuredAt.replace('T', ' '),
-    m.technicianName,
-    m.notes || '-',
-  ]);
+  const measRows = project.fieldMeasurements.map((m) => {
+    const paramText = rtlSafeWrap(localizeDemoMeasurementParam(m.parameter, lang));
+    const techText = rtlSafeWrap(localizeDemoMeasurementTech(m.technicianName, lang));
+    const notesText = m.notes ? rtlSafeWrap(localizeDemoMeasurementNotes(m.notes, lang)) : '-';
+    return [
+      paramText + (m.isSimulated ? ` ${pdfTr.simulatedTag}` : ''),
+      isRtl ? ltr(`${m.value} ${m.unit}`) : `${m.value} ${m.unit}`,
+      isRtl ? ltr(m.measuredAt.replace('T', ' ')) : m.measuredAt.replace('T', ' '),
+      techText,
+      notesText,
+    ];
+  });
 
   runTable({
     startY: cursorY,
@@ -729,7 +769,7 @@ export function buildProjectPdfDocument(
     const lineHeight = isRtl ? 3.8 : 3.3;
     cursorY = ensureSpace(doc, cursorY, wrapped.length * lineHeight + 3);
     if (isRtl) {
-      doc.text(wrapped, pageWidth - 14, cursorY, { align: 'right' });
+      doc.text(wrapped, pageWidth - 14, cursorY, { align: 'right', ...PDF_RAW_TEXT_OPTIONS });
     } else {
       doc.text(wrapped, 14, cursorY);
     }

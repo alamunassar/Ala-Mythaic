@@ -9,6 +9,7 @@ import {
 import { useI18n } from '../i18n/I18nContext';
 import { fmt } from '../i18n/translations';
 import type { AppSection, SolarProject, SystemType } from '../types/mithaq';
+import { localizeDemoCustomerName, localizeDemoLocation } from '../utils/demoLocalization';
 import { generateProjectId } from '../utils/storage';
 import { StatusIndicator } from './StatusBadge';
 
@@ -97,6 +98,7 @@ export function ProjectsView({
                 {tr.projects.customerLabel}
               </label>
               <input
+                dir="auto"
                 type="text"
                 value={customerName}
                 onChange={(e) => setCustomerName(e.target.value)}
@@ -110,6 +112,7 @@ export function ProjectsView({
                 {tr.projects.locationLabel}
               </label>
               <input
+                dir="auto"
                 type="text"
                 value={location}
                 onChange={(e) => setLocation(e.target.value)}
@@ -258,7 +261,7 @@ export function ProjectsView({
               {projects.map((p) => {
                 const comps = comparePromisedVsInstalled(p, lang);
                 const chks = runEngineeringValidation(p, lang);
-                const sum = computeAuditSummary(comps, chks);
+                const sum = computeAuditSummary(comps, chks, lang);
                 const isActive = p.id === activeProjectId;
 
                 return (
@@ -272,8 +275,12 @@ export function ProjectsView({
                       )}
                     </td>
                     <td className="py-3 px-4">
-                      <div className="font-medium text-slate-900">{p.customerName}</div>
-                      <div className="text-xs text-slate-500">{p.location}</div>
+                      <div className="font-medium text-slate-900">
+                        {localizeDemoCustomerName(p.customerName, lang)}
+                      </div>
+                      <div className="text-xs text-slate-500">
+                        {localizeDemoLocation(p.location, lang)}
+                      </div>
                     </td>
                     <td className="py-3 px-4 text-xs text-slate-700 whitespace-nowrap">
                       {tr.systemTypes[p.systemType]}

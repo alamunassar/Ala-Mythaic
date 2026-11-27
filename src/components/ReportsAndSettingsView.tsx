@@ -10,11 +10,12 @@ import { useI18n } from '../i18n/I18nContext';
 import { fmt } from '../i18n/translations';
 import type { SolarProject } from '../types/mithaq';
 import { safeFetchJson } from '../utils/api';
+import { localizeDemoCustomerName, localizeDemoLocation } from '../utils/demoLocalization';
 import { downloadProjectPdfReport } from '../utils/pdfReport';
 import { StatusIndicator } from './StatusBadge';
 
 export function ReportsView({ project }: { project: SolarProject }) {
-  const { lang, tr: t } = useI18n();
+  const { lang, dir, tr: t } = useI18n();
   const [lastReportId, setLastReportId] = useState<string | null>(null);
   const comparisons = comparePromisedVsInstalled(project, lang);
   const checks = runEngineeringValidation(project, lang);
@@ -62,13 +63,14 @@ export function ReportsView({ project }: { project: SolarProject }) {
             <div>
               <div className="text-xs font-semibold text-slate-500">{t.reports.previewLabel}</div>
               <div className="text-lg font-bold text-slate-900 mt-0.5">
-                {project.customerName}{' '}
+                {localizeDemoCustomerName(project.customerName, lang)}{' '}
                 <span dir="ltr" className="font-mono text-base font-semibold">
                   ({project.id})
                 </span>
               </div>
               <div className="text-xs text-slate-600 mt-0.5">
-                {project.location} · {t.systemTypes[project.systemType] ?? project.systemType} ·{' '}
+                {localizeDemoLocation(project.location, lang)} ·{' '}
+                {t.systemTypes[project.systemType] ?? project.systemType} ·{' '}
                 {t.dashboard.installedPrefix}{' '}
                 <span dir="ltr" className="font-mono">
                   {project.installationDate}
@@ -104,7 +106,7 @@ export function ReportsView({ project }: { project: SolarProject }) {
                 <span dir="ltr" className="font-semibold text-end">
                   {summary.equipmentMatchPct !== null
                     ? `${summary.equipmentMatchPct}% (${summary.matchedParameters}/${summary.totalComparedParameters})`
-                    : 'N/A'}
+                    : t.common.na}
                 </span>
                 <span className="font-sans">{t.reports.snapEligibleCats}</span>
                 <span dir="ltr" className="font-semibold text-end">
@@ -132,9 +134,13 @@ export function ReportsView({ project }: { project: SolarProject }) {
                   {summary.discrepancies}
                 </span>
                 <span className="font-sans">{t.reports.snapPassedChecks}</span>
-                <span dir="ltr" className="font-semibold text-end">
-                  {summary.passedChecks} ({summary.verifiedPassChecks}V / {summary.simulatedPassChecks}S /{' '}
-                  {summary.unverifiedPassChecks}U)
+                <span dir={dir} className="font-semibold text-end">
+                  {fmt(t.reports.passConfidenceFormat, {
+                    total: summary.passedChecks,
+                    verified: summary.verifiedPassChecks,
+                    simulated: summary.simulatedPassChecks,
+                    unverified: summary.unverifiedPassChecks,
+                  })}
                 </span>
                 <span className="font-sans">{t.reports.snapFailedChecks}</span>
                 <span dir="ltr" className="font-semibold text-end text-red-700">
@@ -151,7 +157,7 @@ export function ReportsView({ project }: { project: SolarProject }) {
               </div>
               <div className="text-[11px] text-slate-500 pt-1 border-t border-slate-100">
                 {t.reports.formulaPrefix}{' '}
-                <span dir="ltr" className="inline-block font-mono">
+                <span dir={dir} className="inline-block font-mono">
                   {summary.equipmentMatchFormula}
                 </span>
               </div>
